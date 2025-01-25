@@ -1,0 +1,376 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_transmissions.xacro" />
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_common.xacro" />
+
+  <xacro:macro name="ur_robot" params="name parent *origin">
+
+    <!-- Load configuration data from the provided .yaml files -->
+    <xacro:read_model_data
+      joint_limits_parameters_file="/home/tailai/ws_moveit2/src/Universal_Robots_ROS2_Description/config/ur10e/joint_limits.yaml"
+      kinematics_parameters_file="/home/tailai/ws_moveit2/src/Universal_Robots_ROS2_Description/config/ur10e/default_kinematics.yaml"
+      physical_parameters_file="/home/tailai/ws_moveit2/src/Universal_Robots_ROS2_Description/config/ur10e/physical_parameters.yaml"
+      visual_parameters_file="/home/tailai/ws_moveit2/src/Universal_Robots_ROS2_Description/config/ur10e/visual_parameters.yaml"
+      force_abs_paths="false"/>
+
+
+    <xacro:if value="${generate_ros2_control_tag}">
+      <!-- ros2 control include -->
+      <!-- 一句在panda里是写在.urdf.xacro中的 -->
+      <xacro:include filename="$(find ur10e_1_moveit_config)/config/ur.ros2_control.xacro" />
+      <!-- ros2 control instance 这部分后面要简化-->
+      <xacro:ur_ros2_control
+        name="${name}"
+        use_fake_hardware="${use_fake_hardware}"
+        initial_positions="${dict(shoulder_pan_joint=0.0,shoulder_lift_joint=-1.57,elbow_joint=0.0,wrist_1_joint=-1.57,wrist_2_joint=0.0,wrist_3_joint=0.0)}"
+        fake_sensor_commands="false"
+        headless_mode="false"
+        sim_gazebo="false"
+        sim_ignition="false"
+        script_filename="to_be_filled_by_ur_robot_driver"
+        output_recipe_filename="to_be_filled_by_ur_robot_driver"
+        input_recipe_filename="to_be_filled_by_ur_robot_driver"
+        tf_prefix=""
+        hash_kinematics="${kinematics_hash}"
+        robot_ip="192.168.56.101"
+        use_tool_communication="false"
+        tool_voltage="0"
+        tool_parity="0"
+        tool_baud_rate="115200"
+        tool_stop_bits="1"
+        tool_rx_idle_chars="1.5"
+        tool_tx_idle_chars="3.5"
+        tool_device_name="/tmp/ttyUR"
+        tool_tcp_port="54321"
+        reverse_port="50001"
+        script_sender_port="50002"
+        reverse_ip="192.168.56.101"
+        script_command_port="50004"
+        trajectory_port="50003"
+        non_blocking_read="true"
+        keep_alive_count="2"
+        />
+    </xacro:if>
+
+    <!-- Add URDF transmission elements (for ros_control) -->
+    <!--<xacro:ur_arm_transmission prefix="${prefix}" hw_interface="${transmission_hw_interface}" />-->
+    <!-- Placeholder for ros2_control transmission which don't yet exist -->
+
+    <!-- links -  main serial chain -->
+    <link name="base_link"/>
+    <link name="base_link_inertia">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/base.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/base.stl" />
+        </geometry>
+      </collision>
+      <xacro:cylinder_inertial radius="${base_inertia_radius}" length="${base_inertia_length}" mass="${base_mass}">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+      </xacro:cylinder_inertial>
+    </link>
+    <link name="shoulder_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/shoulder.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/shoulder.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${shoulder_mass}"/>
+        <origin rpy="${shoulder_inertia_rotation}" xyz="${shoulder_cog}"/>
+        <inertia
+            ixx="${shoulder_inertia_ixx}"
+            ixy="${shoulder_inertia_ixy}"
+            ixz="${shoulder_inertia_ixz}"
+            iyy="${shoulder_inertia_iyy}"
+            iyz="${shoulder_inertia_iyz}"
+            izz="${shoulder_inertia_izz}"
+        />
+      </inertial>    
+    </link>
+    <link name="upper_arm_link">
+      <visual>
+        <origin xyz="0 0 ${shoulder_offset}" rpy="${pi/2} 0 ${-pi/2}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/upperarm.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${shoulder_offset}" rpy="${pi/2} 0 ${-pi/2}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/upperarm.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${upper_arm_mass}"/>
+        <origin rpy="${upper_arm_inertia_rotation}" xyz="${upper_arm_cog}"/>
+        <inertia
+            ixx="${upper_arm_inertia_ixx}"
+            ixy="${upper_arm_inertia_ixy}"
+            ixz="${upper_arm_inertia_ixz}"
+            iyy="${upper_arm_inertia_iyy}"
+            iyz="${upper_arm_inertia_iyz}"
+            izz="${upper_arm_inertia_izz}"
+        />
+      </inertial>
+    </link>
+    <link name="forearm_link">
+      <visual>
+        <origin xyz="0 0 ${elbow_offset}" rpy="${pi/2} 0 ${-pi/2}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/forearm.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${elbow_offset}" rpy="${pi/2} 0 ${-pi/2}"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/forearm.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${forearm_mass}"/>
+        <origin rpy="${forearm_inertia_rotation}" xyz="${forearm_cog}"/>
+        <inertia
+            ixx="${forearm_inertia_ixx}"
+            ixy="${forearm_inertia_ixy}"
+            ixz="${forearm_inertia_ixz}"
+            iyy="${forearm_inertia_iyy}"
+            iyz="${forearm_inertia_iyz}"
+            izz="${forearm_inertia_izz}"
+        />
+      </inertial>
+    </link>
+    <link name="wrist_1_link">
+	  <xacro:get_visual_params name="wrist_1" type="visual_offset"/>
+      <visual>
+      	<origin xyz="0 0 ${visual_params}" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/wrist1.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${visual_params}" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/wrist1.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${wrist_1_mass}"/>
+        <origin rpy="${wrist_1_inertia_rotation}" xyz="${wrist_1_cog}"/>
+        <inertia
+            ixx="${wrist_1_inertia_ixx}"
+            ixy="${wrist_1_inertia_ixy}"
+            ixz="${wrist_1_inertia_ixz}"
+            iyy="${wrist_1_inertia_iyy}"
+            iyz="${wrist_1_inertia_iyz}"
+            izz="${wrist_1_inertia_izz}"
+        />
+      </inertial>
+    </link>
+    <link name="wrist_2_link">
+	  <xacro:get_visual_params name="wrist_2" type="visual_offset"/>
+      <visual>
+        <origin xyz="0 0 ${visual_params}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/wrist2.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${visual_params}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/wrist2.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${wrist_2_mass}"/>
+        <origin rpy="${wrist_2_inertia_rotation}" xyz="${wrist_2_cog}"/>
+        <inertia
+            ixx="${wrist_2_inertia_ixx}"
+            ixy="${wrist_2_inertia_ixy}"
+            ixz="${wrist_2_inertia_ixz}"
+            iyy="${wrist_2_inertia_iyy}"
+            iyz="${wrist_2_inertia_iyz}"
+            izz="${wrist_2_inertia_izz}"
+        />
+      </inertial>
+    </link>
+    <link name="wrist_3_link">
+	  <xacro:get_visual_params name="wrist_3" type="visual_offset"/>
+      <visual>
+        <origin xyz="0 0 ${visual_params}" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/visual/wrist3.dae" />
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${visual_params}" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_description/meshes/ur10e/collision/wrist3.stl" />
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${wrist_3_mass}"/>
+        <origin rpy="${wrist_3_inertia_rotation}" xyz="${wrist_3_cog}"/>
+        <inertia
+            ixx="${wrist_3_inertia_ixx}"
+            ixy="${wrist_3_inertia_ixy}"
+            ixz="${wrist_3_inertia_ixz}"
+            iyy="${wrist_3_inertia_iyy}"
+            iyz="${wrist_3_inertia_iyz}"
+            izz="${wrist_3_inertia_izz}"
+        />
+      </inertial>
+    </link>
+
+    <!-- base_joint fixes base_link to the environment -->
+    <joint name="base_joint" type="fixed">
+      <xacro:insert_block name="origin" />
+      <parent link="${parent}" />
+      <child link="base_link" />
+    </joint>
+
+    <!-- joints - main serial chain -->
+    <joint name="base_link-base_link_inertia" type="fixed">
+      <parent link="base_link" />
+      <child link="base_link_inertia" />
+      <!-- 'base_link' is REP-103 aligned (so X+ forward), while the internal
+           frames of the robot/controller have X+ pointing backwards.
+           Use the joint between 'base_link' and 'base_link_inertia' (a dummy
+           link/frame) to introduce the necessary rotation over Z (of pi rad).
+      -->
+      <origin xyz="0 0 0" rpy="0 0 ${pi}" />
+    </joint>
+    <joint name="shoulder_pan_joint" type="revolute">
+      <parent link="base_link_inertia" />
+      <child link="shoulder_link" />
+      <origin xyz="${shoulder_x} ${shoulder_y} ${shoulder_z}" rpy="${shoulder_roll} ${shoulder_pitch} ${shoulder_yaw}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${shoulder_pan_lower_limit}" upper="${shoulder_pan_upper_limit}"
+        effort="${shoulder_pan_effort_limit}" velocity="${shoulder_pan_velocity_limit}"/>
+      <xacro:if value="${safety_limits}">
+         <safety_controller soft_lower_limit="${shoulder_pan_lower_limit + safety_pos_margin}" soft_upper_limit="${shoulder_pan_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+      </xacro:if>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="shoulder_lift_joint" type="revolute">
+      <parent link="shoulder_link" />
+      <child link="upper_arm_link" />
+      <origin xyz="${upper_arm_x} ${upper_arm_y} ${upper_arm_z}" rpy="${upper_arm_roll} ${upper_arm_pitch} ${upper_arm_yaw}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${shoulder_lift_lower_limit}" upper="${shoulder_lift_upper_limit}"
+        effort="${shoulder_lift_effort_limit}" velocity="${shoulder_lift_velocity_limit}"/>
+      <xacro:if value="${safety_limits}">
+         <safety_controller soft_lower_limit="${shoulder_lift_lower_limit + safety_pos_margin}" soft_upper_limit="${shoulder_lift_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+      </xacro:if>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="elbow_joint" type="revolute">
+      <parent link="upper_arm_link" />
+      <child link="forearm_link" />
+      <origin xyz="${forearm_x} ${forearm_y} ${forearm_z}" rpy="${forearm_roll} ${forearm_pitch} ${forearm_yaw}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${elbow_joint_lower_limit}" upper="${elbow_joint_upper_limit}"
+        effort="${elbow_joint_effort_limit}" velocity="${elbow_joint_velocity_limit}"/>
+      <xacro:if value="${safety_limits}">
+         <safety_controller soft_lower_limit="${elbow_joint_lower_limit + safety_pos_margin}" soft_upper_limit="${elbow_joint_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+      </xacro:if>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="wrist_1_joint" type="revolute">
+      <parent link="forearm_link" />
+      <child link="wrist_1_link" />
+      <origin xyz="${wrist_1_x} ${wrist_1_y} ${wrist_1_z}" rpy="${wrist_1_roll} ${wrist_1_pitch} ${wrist_1_yaw}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${wrist_1_lower_limit}" upper="${wrist_1_upper_limit}"
+        effort="${wrist_1_effort_limit}" velocity="${wrist_1_velocity_limit}"/>
+      <xacro:if value="${safety_limits}">
+         <safety_controller soft_lower_limit="${wrist_1_lower_limit + safety_pos_margin}" soft_upper_limit="${wrist_1_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+      </xacro:if>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="wrist_2_joint" type="revolute">
+      <parent link="wrist_1_link" />
+      <child link="wrist_2_link" />
+      <origin xyz="${wrist_2_x} ${wrist_2_y} ${wrist_2_z}" rpy="${wrist_2_roll} ${wrist_2_pitch} ${wrist_2_yaw}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${wrist_2_lower_limit}" upper="${wrist_2_upper_limit}"
+             effort="${wrist_2_effort_limit}" velocity="${wrist_2_velocity_limit}"/>
+      <xacro:if value="${safety_limits}">
+         <safety_controller soft_lower_limit="${wrist_2_lower_limit + safety_pos_margin}" soft_upper_limit="${wrist_2_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+      </xacro:if>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="wrist_3_joint" type="${wrist_3_joint_type}">
+      <parent link="wrist_2_link" />
+      <child link="wrist_3_link" />
+      <origin xyz="${wrist_3_x} ${wrist_3_y} ${wrist_3_z}" rpy="${wrist_3_roll} ${wrist_3_pitch} ${wrist_3_yaw}" />
+      <axis xyz="0 0 1" />
+      <xacro:if value="${wrist_3_joint_type != 'continuous'}">
+        <limit lower="${wrist_3_lower_limit}" upper="${wrist_3_upper_limit}"
+          effort="${wrist_3_effort_limit}" velocity="${wrist_3_velocity_limit}"/>
+        <xacro:if value="${safety_limits}">
+          <safety_controller soft_lower_limit="${wrist_3_lower_limit + safety_pos_margin}" soft_upper_limit="${wrist_3_upper_limit - safety_pos_margin}" k_position="${safety_k_position}" k_velocity="0.0"/>
+        </xacro:if>
+      </xacro:if>
+      <xacro:unless value="${wrist_3_joint_type != 'continuous'}">
+        <limit effort="${wrist_3_effort_limit}" velocity="${wrist_3_velocity_limit}"/>
+        <xacro:if value="${safety_limits}">
+          <safety_controller k_position="${safety_k_position}" k_velocity="0.0"/>
+        </xacro:if>
+      </xacro:unless>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+
+    <link name="ft_frame"/>
+    <joint name="wrist_3_link-ft_frame" type="fixed">
+      <parent link="wrist_3_link"/>
+      <child link="ft_frame"/>
+      <origin xyz="0 0 0" rpy="${pi} 0 0"/>
+    </joint>
+
+    <!-- ROS-Industrial 'base' frame - base_link to UR 'Base' Coordinates transform -->
+    <link name="base"/>
+    <joint name="base_link-base_fixed_joint" type="fixed">
+      <!-- Note the rotation over Z of pi radians - as base_link is REP-103
+           aligned (i.e., has X+ forward, Y+ left and Z+ up), this is needed
+           to correctly align 'base' with the 'Base' coordinate system of
+           the UR controller.
+      -->
+      <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+      <parent link="base_link"/>
+      <child link="base"/>
+    </joint>
+
+    <!-- ROS-Industrial 'flange' frame - attachment point for EEF models -->
+    <link name="flange" />
+    <joint name="wrist_3-flange" type="fixed">
+      <parent link="wrist_3_link" />
+      <child link="flange" />
+      <origin xyz="0 0 0" rpy="0 ${-pi/2.0} ${-pi/2.0}" />
+    </joint>
+
+    <!-- ROS-Industrial 'tool0' frame - all-zeros tool frame -->
+    <link name="tool0"/>
+    <joint name="flange-tool0" type="fixed">
+      <!-- default toolframe - X+ left, Y+ up, Z+ front -->
+      <origin xyz="0 0 0" rpy="${pi/2.0} 0 ${pi/2.0}"/>
+      <parent link="flange"/>
+      <child link="tool0"/>
+    </joint>
+
+  </xacro:macro>
+</robot>
