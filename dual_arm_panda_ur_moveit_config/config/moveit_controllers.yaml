@@ -1,0 +1,42 @@
+# MoveIt uses this configuration for controller management
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.2
+  allowed_goal_duration_margin: 0.5
+  allowed_start_tolerance: 0.01
+
+moveit_controller_manager: moveit_ros_control_interface/Ros2ControlManager
+# moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+#This file is different from the moveit_controllers.yaml of ur10e and also different from that of the single panda arm
+#Here I use the type of the moveit_controllers.yaml of ur10e to write this file (which is also the same type of the single panda arm)
+
+# moveit_simple_controller_manager:
+#   controller_names:
+#     - ur_manipulator_controller
+#     - panda_arm_controller
+
+#   ur_manipulator_controller:
+#     action_ns: follow_joint_trajectory
+#     type: FollowJointTrajectory
+#     default: true
+#     joints:
+#       - shoulder_pan_joint
+#       - shoulder_lift_joint
+#       - elbow_joint
+#       - wrist_1_joint
+#       - wrist_2_joint
+#       - wrist_3_joint
+      
+#   panda_arm_controller:
+#     action_ns: follow_joint_trajectory
+#     type: FollowJointTrajectory
+#     default: true
+#     joints:
+#       - panda_joint1
+#       - panda_joint2
+#       - panda_joint3
+#       - panda_joint4
+#       - panda_joint5
+#       - panda_joint6
+#       - panda_joint7
+
