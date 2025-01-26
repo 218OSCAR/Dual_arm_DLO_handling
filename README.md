@@ -28,6 +28,7 @@
 # Description of the packages
  - **ur10e_1_moveit _config**: Change the moveit_config of the UR robot to the same type of panda robot, amd add a gripper(robotiq_2f85).
  - **dual_arm_panda_ur_moveit_config**: Implement that ur10e and panda can be loaded with a demo.launch.py file, and both can be planned in the same simulation environment.
+   ![dual_arm_moveit_config](https://github.com/user-attachments/assets/fe7457d7-98ab-4331-9281-ad3a4020113b)
  - **mtc_dual_arm_panda_ur**: The MTC task for dual arm(panda and UR10e) to handle an object in the simulation environment.
  - **mtc_dual_arm_real**:  The MTC task for dual arm(panda and UR10e) to handle the DLO in the real world environment.
  - **solution_subscriber_pkg**: Listen to the trajectory planned by the MTC and send it to the traj_server of panda and UR10e(in the real world environment).
