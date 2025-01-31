@@ -32,14 +32,17 @@ using json = nlohmann::json;
 
 std::atomic<bool> udp_running(true);
 std::mutex grasp_point_mutex;
+std::mutex joint_positions_mutex;
 std::condition_variable udp_condition_variable;
+std::condition_variable joint_positions_condition_variable;
 // std::array<double, 3> grasp_point = {0.0, 0.0, 0.0}; // default value
 std::array<double, 6> grasp_point = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+std::array<double, 6> joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("mtc_dual_arm_real");
 namespace mtc = moveit::task_constructor;
 
-void udpReceiver(const std::string& host, int port) {
+void udpReceiverRight(const std::string& host, int port) {
   try {
     boost::asio::io_context io_context;
     udp::socket socket(io_context, udp::endpoint(boost::asio::ip::make_address(host), port));
@@ -77,6 +80,45 @@ void udpReceiver(const std::string& host, int port) {
   }
 }
 
+void udpReceiverLeft(const std::string& host, int port) {
+  try {
+    boost::asio::io_context io_context;
+    udp::socket socket(io_context, udp::endpoint(boost::asio::ip::make_address(host), port));
+    std::array<char, 4096> recv_buf;
+
+    while (udp_running) {
+      udp::endpoint sender_endpoint;
+      size_t len = socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
+
+      // parse the received data
+      std::string data(recv_buf.data(), len);
+      json received_json = json::parse(data);
+
+      // check if the received data is an array
+      if (received_json.is_array()) {
+        // extract the joint positions
+        auto current_q = received_json;
+
+        // update the grasp point
+        {
+          std::lock_guard<std::mutex> lock(joint_positions_mutex);
+          for (size_t i = 0; i < joint_positions.size() && i < current_q.size(); ++i) {
+            joint_positions[i] = current_q[i];
+          }
+        }
+        joint_positions_condition_variable.notify_one();
+
+        std::cout << "Received left arm joint position: " << current_q << std::endl;
+      } else {
+        std::cerr << "Received data is not an array" << std::endl;
+      }
+
+    }
+  } catch (std::exception& e) {
+    std::cerr << "UDP Receiver Error: " << e.what() << std::endl;
+  }
+}
+
 
 class MTCTaskNode
 {
@@ -98,6 +140,7 @@ private:
   // Compose an MTC task from a series of stages.
   // mtc::Task createTask();
   mtc::Task createLeftArmTask();
+  mtc::Task createLeftArmSyncTask();
   mtc::Task createRightArmTask();
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
@@ -243,7 +286,8 @@ void MTCTaskNode::setupPlanningScene()
 
 void MTCTaskNode::doTask()
 {
-  mtc::Task left_task = createLeftArmTask();  // 假设 createTask() 是左臂任务
+  /* planning and execution for the left arm to hand-over position*/
+  mtc::Task left_task = createLeftArmTask();  
   try
   {
     left_task.init();
@@ -270,8 +314,45 @@ void MTCTaskNode::doTask()
   }
   RCLCPP_INFO(LOGGER, "Left arm task executed successfully");
 
+  /* synchronize the left arm to current position in the real world */
+  // Note: this step is necessary if the left arm is moved manually to a certain position
+  RCLCPP_INFO(LOGGER, "Waiting for joint positions via UDP...");
+  {
+    std::unique_lock<std::mutex> lock(joint_positions_mutex);
+    joint_positions_condition_variable.wait(lock, []() {
+      return !std::all_of(joint_positions.begin(), joint_positions.end(), [](double v) { return v == 0.0; });
+    });
+  }
+  RCLCPP_INFO(LOGGER, "UR joint position received: [%f, %f, %f, %f, %f, %f]", joint_positions[0], joint_positions[1], joint_positions[2], joint_positions[3], joint_positions[4], joint_positions[5]);
 
-  // //UDP receiver part
+  mtc::Task left_sync_task = createLeftArmSyncTask();
+  try
+  {
+    left_sync_task.init();
+  }
+  catch (mtc::InitStageException& e)
+  {
+    RCLCPP_ERROR_STREAM(LOGGER, "Left arm sync task initialization failed: " << e.what());
+    return;
+  }
+
+  if (!left_sync_task.plan(5))
+  {
+    RCLCPP_ERROR_STREAM(LOGGER, "Left arm sync task planning failed");
+    return;
+  }
+
+  // left_sync_task.introspection().publishSolution(*left_sync_task.solutions().front());
+
+  auto left_sync_result = left_sync_task.execute(*left_sync_task.solutions().front());
+  if (left_sync_result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+  {
+    RCLCPP_ERROR_STREAM(LOGGER, "Left arm sync task execution failed");
+    return;
+  }
+  RCLCPP_INFO(LOGGER, "Left arm sync task executed successfully");
+
+  /* planning and execution for the right arm to grasp the object */
   RCLCPP_INFO(LOGGER, "Waiting for grasp point via UDP...");
   {
     std::unique_lock<std::mutex> lock(grasp_point_mutex);
@@ -280,7 +361,6 @@ void MTCTaskNode::doTask()
     });
   }
   RCLCPP_INFO(LOGGER, "Grasp point received: [%f, %f, %f]", grasp_point[0], grasp_point[1], grasp_point[2]);
-
 
 
   mtc::Task right_task = createRightArmTask();  
@@ -511,7 +591,8 @@ mtc::Task MTCTaskNode::createLeftArmTask()
     geometry_msgs::msg::PoseStamped target_pose_msg;
     target_pose_msg.header.frame_id = "world";
     target_pose_msg.pose.position.z = 1.645;
-    target_pose_msg.pose.position.x = -0.1;
+    // target_pose_msg.pose.position.x = -0.1;
+    target_pose_msg.pose.position.x = 0.0;
     target_pose_msg.pose.position.y = 0.6;
 
     // target_pose_msg.pose.position.z = 1.104;
@@ -620,6 +701,84 @@ mtc::Task MTCTaskNode::createLeftArmTask()
   // }
 
 
+  return task;
+}
+
+mtc::Task MTCTaskNode::createLeftArmSyncTask(){
+   mtc::Task task;
+  task.stages()->setName("left arm task");
+  task.loadRobotModel(node_);
+
+  const auto& left_arm_group_name = "left_ur_manipulator";
+  const auto& left_hand_group_name = "left_gripper";
+  const auto& left_hand_frame = "left_robotiq_85_base_link";
+  std::vector<double> delta = {0, 0, 0};
+  std::vector<double> orients = {0, 0, 0, 1};
+
+
+  task.setProperty("left_group", left_arm_group_name);
+  task.setProperty("left_eef", left_hand_group_name);
+  task.setProperty("left_ik_frame", left_hand_frame);
+
+
+  // Disable warnings for this line, as it's a variable that's set but not used in this example
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+    mtc::Stage* current_state_ptr = nullptr;  // Forward current_state on to grasp pose generator
+  #pragma GCC diagnostic pop
+
+
+  auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
+  current_state_ptr = stage_state_current.get();
+  task.add(std::move(stage_state_current));
+  
+  // 3 options of the solvers
+  auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_);
+  auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+
+  //attach the object to the hand
+  {
+    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object left");
+    stage->attachObject("object", left_hand_frame);
+    task.add(std::move(stage));
+  }
+  // forbid collision
+  {
+    auto stage =
+        std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (left_gripper,object)");
+    stage->allowCollisions("object",
+                          task.getRobotModel()
+                              ->getJointModelGroup(left_hand_group_name)
+                              ->getLinkModelNamesWithCollisionGeometry(),
+                          false);
+    task.add(std::move(stage));
+  }
+  // move to synchronization position
+  {
+    // set Goal from joint positions
+    std::map<std::string, double> joint_goal;
+    {
+      std::lock_guard<std::mutex> lock(joint_positions_mutex);
+      joint_goal = {{"left_shoulder_pan_joint", joint_positions[0]},
+                    {"left_shoulder_lift_joint", joint_positions[1]},
+                    {"left_elbow_joint", joint_positions[2]},
+                    {"left_wrist_1_joint", joint_positions[3]},
+                    {"left_wrist_2_joint", joint_positions[4]},
+                    {"left_wrist_3_joint", joint_positions[5]}};
+    }
+
+    auto stage_move_to = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", interpolation_planner);
+    stage_move_to->setGroup(left_arm_group_name);
+    stage_move_to->setGoal(joint_goal);
+    task.add(std::move(stage_move_to));
+  }
+  // detach the object
+  {
+    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object left");
+    stage->detachObject("object", left_hand_frame);
+    task.add(std::move(stage));
+  } 
+  
   return task;
 }
 
@@ -804,78 +963,78 @@ mtc::Task MTCTaskNode::createRightArmTask()
 
     task.add(std::move(grasp_right));
   }
-  {
-    auto stage_move_to_place_right = std::make_unique<mtc::stages::Connect>(
-        "move to place right",
-        mtc::stages::Connect::GroupPlannerVector{ { right_arm_group_name, sampling_planner },
-                                                   });
-    stage_move_to_place_right->setTimeout(5.0);
-    stage_move_to_place_right->properties().configureInitFrom(mtc::Stage::PARENT);
-    task.add(std::move(stage_move_to_place_right));
-  }
-  {
-    auto place_right = std::make_unique<mtc::SerialContainer>("place object2 right");
-    task.properties().exposeTo(place_right->properties(), { "right_eef", "right_group", "right_ik_frame" });
-    place_right->properties().set("eef", task.properties().get<std::string>("right_eef"));// Provide standard names for substages
-    place_right->properties().set("group", task.properties().get<std::string>("right_group"));
-    place_right->properties().set("ik_frame", task.properties().get<std::string>("right_ik_frame"));
-  {
-    // Sample place pose
-    auto stage = std::make_unique<mtc::stages::GeneratePlacePose>("generate place pose right");
-    stage->properties().configureInitFrom(mtc::Stage::PARENT);
-    stage->properties().set("marker_ns", "place_pose_right");
-    stage->setObject("object2");
-    stage->setTargetDelta(delta);
-    stage->setTargetOrient(orients);
+  // {
+  //   auto stage_move_to_place_right = std::make_unique<mtc::stages::Connect>(
+  //       "move to place right",
+  //       mtc::stages::Connect::GroupPlannerVector{ { right_arm_group_name, sampling_planner },
+  //                                                  });
+  //   stage_move_to_place_right->setTimeout(5.0);
+  //   stage_move_to_place_right->properties().configureInitFrom(mtc::Stage::PARENT);
+  //   task.add(std::move(stage_move_to_place_right));
+  // }
+  // {
+  //   auto place_right = std::make_unique<mtc::SerialContainer>("place object2 right");
+  //   task.properties().exposeTo(place_right->properties(), { "right_eef", "right_group", "right_ik_frame" });
+  //   place_right->properties().set("eef", task.properties().get<std::string>("right_eef"));// Provide standard names for substages
+  //   place_right->properties().set("group", task.properties().get<std::string>("right_group"));
+  //   place_right->properties().set("ik_frame", task.properties().get<std::string>("right_ik_frame"));
+  // {
+  //   // Sample place pose
+  //   auto stage = std::make_unique<mtc::stages::GeneratePlacePose>("generate place pose right");
+  //   stage->properties().configureInitFrom(mtc::Stage::PARENT);
+  //   stage->properties().set("marker_ns", "place_pose_right");
+  //   stage->setObject("object2");
+  //   stage->setTargetDelta(delta);
+  //   stage->setTargetOrient(orients);
 
-    geometry_msgs::msg::PoseStamped target_pose_msg_right;
-    target_pose_msg_right.header.frame_id = "world";
-    target_pose_msg_right.pose.position.z = 1.145;
-    target_pose_msg_right.pose.position.x = 0.2;
-    target_pose_msg_right.pose.position.y = 0.80;
-    target_pose_msg_right.pose.orientation.w = 1.0;
-    // tf2::Quaternion quaternion;
-    // quaternion.setRPY(-M_PI / 2, 0, 0);
-    // target_pose_msg_right.pose.orientation.x = quaternion.x();
-    // target_pose_msg_right.pose.orientation.y = quaternion.y();
-    // target_pose_msg_right.pose.orientation.z = quaternion.z();
-    // target_pose_msg_right.pose.orientation.w = quaternion.w();
-    stage->setPose(target_pose_msg_right);
-    stage->setMonitoredStage(attach_object_stage_right);  // Hook into attach_object_stage
-    // Compute IK
-    auto wrapper =
-        std::make_unique<mtc::stages::ComputeIK>("place pose right IK", std::move(stage));
-    wrapper->setMaxIKSolutions(2);
-    wrapper->setMinSolutionDistance(1.0);
-    wrapper->setIKFrame("object2");
-    wrapper->properties().configureInitFrom(mtc::Stage::PARENT, { "eef", "group" });
-    wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, { "target_pose" });
-    place_right->insert(std::move(wrapper));
-  }
+  //   geometry_msgs::msg::PoseStamped target_pose_msg_right;
+  //   target_pose_msg_right.header.frame_id = "world";
+  //   target_pose_msg_right.pose.position.z = 1.145;
+  //   target_pose_msg_right.pose.position.x = 0.2;
+  //   target_pose_msg_right.pose.position.y = 0.80;
+  //   target_pose_msg_right.pose.orientation.w = 1.0;
+  //   // tf2::Quaternion quaternion;
+  //   // quaternion.setRPY(-M_PI / 2, 0, 0);
+  //   // target_pose_msg_right.pose.orientation.x = quaternion.x();
+  //   // target_pose_msg_right.pose.orientation.y = quaternion.y();
+  //   // target_pose_msg_right.pose.orientation.z = quaternion.z();
+  //   // target_pose_msg_right.pose.orientation.w = quaternion.w();
+  //   stage->setPose(target_pose_msg_right);
+  //   stage->setMonitoredStage(attach_object_stage_right);  // Hook into attach_object_stage
+  //   // Compute IK
+  //   auto wrapper =
+  //       std::make_unique<mtc::stages::ComputeIK>("place pose right IK", std::move(stage));
+  //   wrapper->setMaxIKSolutions(2);
+  //   wrapper->setMinSolutionDistance(1.0);
+  //   wrapper->setIKFrame("object2");
+  //   wrapper->properties().configureInitFrom(mtc::Stage::PARENT, { "eef", "group" });
+  //   wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, { "target_pose" });
+  //   place_right->insert(std::move(wrapper));
+  // }
   
-  {
-    auto stage = std::make_unique<mtc::stages::MoveTo>("open right hand", interpolation_planner);
-    stage->setGroup(right_hand_group_name);
-    stage->setGoal("open");
-    place_right->insert(std::move(stage));
-  }
-  {
-    auto stage =
-        std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (right_gripper,object)");
-    stage->allowCollisions("object2",
-                          task.getRobotModel()
-                              ->getJointModelGroup(right_hand_group_name)
-                              ->getLinkModelNamesWithCollisionGeometry(),
-                          false);
-    place_right->insert(std::move(stage));
-  }
-  {
-    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object right");
-    stage->detachObject("object2", right_hand_frame);
-    place_right->insert(std::move(stage));
-  } 
-    task.add(std::move(place_right));
-  }
+  // {
+  //   auto stage = std::make_unique<mtc::stages::MoveTo>("open right hand", interpolation_planner);
+  //   stage->setGroup(right_hand_group_name);
+  //   stage->setGoal("open");
+  //   place_right->insert(std::move(stage));
+  // }
+  // {
+  //   auto stage =
+  //       std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (right_gripper,object)");
+  //   stage->allowCollisions("object2",
+  //                         task.getRobotModel()
+  //                             ->getJointModelGroup(right_hand_group_name)
+  //                             ->getLinkModelNamesWithCollisionGeometry(),
+  //                         false);
+  //   place_right->insert(std::move(stage));
+  // }
+  // {
+  //   auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object right");
+  //   stage->detachObject("object2", right_hand_frame);
+  //   place_right->insert(std::move(stage));
+  // } 
+  //   task.add(std::move(place_right));
+  // }
   return task;
 }
 
@@ -892,7 +1051,8 @@ int main(int argc, char** argv)
   rclcpp::executors::MultiThreadedExecutor executor;
   
   //start the UDP receiver thread
-  std::thread udp_thread(udpReceiver, "192.168.1.7", 5060);
+  std::thread udp_thread_right(udpReceiverRight, "192.168.1.7", 5060);
+  std::thread udp_thread_left(udpReceiverLeft,  "192.168.1.7", 5070);
 
   auto spin_thread = std::make_unique<std::thread>([&executor, &mtc_task_node]() {
     executor.add_node(mtc_task_node->getNodeBaseInterface());
@@ -906,8 +1066,13 @@ int main(int argc, char** argv)
   // // stop the UDP receiver thread
   udp_running = false;
   udp_condition_variable.notify_all();
-  if (udp_thread.joinable()) {
-    udp_thread.join();
+  if (udp_thread_right.joinable()) {
+    udp_thread_right.join();
+  }
+
+  joint_positions_condition_variable.notify_all();
+  if (udp_thread_left.joinable()) {
+    udp_thread_left.join();
   }
 
   spin_thread->join();
