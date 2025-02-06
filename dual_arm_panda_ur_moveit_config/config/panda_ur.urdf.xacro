@@ -74,7 +74,7 @@
     <!-- box shaped table as base for the panda -->
     <link name="base_2">
         <visual>
-        <origin xyz="0.02 0.94 0.4725" rpy="0 0 0" />
+        <origin xyz="-0.02 0.94 0.4725" rpy="0 0 0" />
         <geometry>
             <box size="0.82 1.08 0.945" />
         </geometry>
@@ -83,7 +83,7 @@
         </material>
         </visual>
         <collision>
-        <origin xyz="0.02 0.94 0.4725" rpy="0 0 0" />
+        <origin xyz="-0.02 0.94 0.4725" rpy="0 0 0" />
         <geometry>
             <box size="0.82 1.08 0.945" />
         </geometry>
@@ -98,6 +98,36 @@
     <joint name="base_2_to_world" type="fixed">
             <parent link="world"/>
             <child link="base_2"/>
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- box shaped table as base for the second panda -->
+    <link name="base_3">
+        <visual>
+        <origin xyz="0.80 0.94 0.4725" rpy="0 0 0" />
+        <geometry>
+            <box size="0.82 1.08 0.945" />
+        </geometry>
+        <material name="White">
+            <color rgba="1.0 1.0 1.0 1.0" />
+        </material>
+        </visual>
+        <collision>
+        <origin xyz="0.80 0.94 0.4725" rpy="0 0 0" />
+        <geometry>
+            <box size="0.82 1.08 0.945" />
+        </geometry>
+        </collision>
+        <inertial>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <mass value="10.0"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.001" iyy="0.0" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <joint name="base_3_to_world" type="fixed">
+            <parent link="world"/>
+            <child link="base_3"/>
             <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
     </joint>
 
@@ -210,6 +240,16 @@
         prefix="right_"
         parent="world"
         initial_positions_file="$(arg right_initial_positions_file)">
-        <origin xyz="0.032 1.315 0.945" rpy="0 0 -1.5708" />
+        <!-- <origin xyz="0.032 1.315 0.945" rpy="0 0 -1.5708" /> -->
+        <origin xyz="0.004 1.315 0.945" rpy="0 0 -1.5708" />
+    </xacro:panda_arm>
+
+    <!-- Right arm -->
+    <xacro:panda_arm
+        name="mount_panda"
+        prefix="mount_"
+        parent="world"
+        initial_positions_file="$(arg right_initial_positions_file)">
+        <origin xyz="0.804 1.315 0.945" rpy="0 0 -1.5708" />
     </xacro:panda_arm>
 </robot>
