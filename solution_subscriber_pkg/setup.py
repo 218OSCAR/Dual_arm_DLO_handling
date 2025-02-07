@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'solution_subscriber = solution_subscriber_pkg.solution_subscriber:main'
+            'solution_subscriber = solution_subscriber_pkg.solution_subscriber:main',
+            'marker_publisher = solution_subscriber_pkg.marker_publisher:main'
         ],
     },
 )
