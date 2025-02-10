@@ -2,7 +2,7 @@ import socket
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from visualization_msgs.msg import Marker
+from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, PointStamped
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from threading import Lock  # Ensure thread safety
@@ -75,15 +75,19 @@ class RopeMarkerPublisher(Node):
         self.data_lock = Lock()  # Prevent race conditions
 
         # ROS2 Marker Publisher
-        self.topic = "/"+self.name+"_marker"
-        self.marker_pub = self.create_publisher(Marker, self.topic, 10)
+        self.topic = "/"+self.name+"_marker"  
         
         #  Initialize TF2 Buffer & Listener once
         self.tf_buffer = tf2_ros.Buffer(cache_time=rclpy.duration.Duration(seconds=2))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Continuous publishing loop
-        self.create_timer(0.1, self.publish_loop)
+        if self.name == 'tcp_points':
+            self.marker_array_pub = self.create_publisher(MarkerArray, self.topic, 10)
+            self.create_timer(0.1, self.publish_point_loop)
+        else:
+            self.marker_pub = self.create_publisher(Marker, self.topic, 10)
+            self.create_timer(0.1, self.publish_line_loop)
         
     def transform_point(self, point, source_frame, target_frame):
         """ Transform a point using TF2, waiting up to 100ms for a valid TF """
@@ -104,7 +108,7 @@ class RopeMarkerPublisher(Node):
             self.get_logger().warn(f"TF lookup failed from {source_frame} to {target_frame}. Retrying...")
             return point  # Return original if TF lookup fails
 
-    def publish_loop(self):
+    def publish_line_loop(self):
         """ Continuously publishes the latest stored rope points """
         # self.get_logger().info("Publish loop triggered")  # Debug log
         with self.data_lock:
@@ -137,6 +141,44 @@ class RopeMarkerPublisher(Node):
             # Publish continuously
             self.marker_pub.publish(marker)
             self.get_logger().info(f"Published {len(rope_positions)} rope points to {self.topic}")
+            
+    def publish_point_loop(self):
+        """ Continuously publishes the latest stored rope points """
+        with self.data_lock:
+            rope_positions = self.shared_data.get("rope_positions", np.empty((0, 3), dtype=np.float64))
+
+        with self.data_lock:
+            if rope_positions.shape[0] == 0:
+                return  # No data to publish yet
+
+            marker_array = MarkerArray()
+
+            for i, point in enumerate(rope_positions):
+                marker = Marker()
+                marker.header.frame_id = "world"
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.ns = self.name + "_model"
+                marker.id = i  # Unique ID for each marker
+                marker.type = Marker.SPHERE
+                marker.action = Marker.ADD
+                marker.scale.x = 0.03  # Diameter of the ball
+                marker.scale.y = 0.03
+                marker.scale.z = 0.03
+                marker.color.r = self.marker_color[0]
+                marker.color.g = self.marker_color[1]
+                marker.color.b = self.marker_color[2]
+                marker.color.a = 1.0
+
+                # Set the position of the ball marker
+                p = Point(x=point[0], y=point[1], z=point[2])
+                transformed_point = self.transform_point(p, "right_panda_link0", "world")
+                marker.pose.position = transformed_point
+
+                marker_array.markers.append(marker)
+
+            # Publish the marker array
+            self.marker_array_pub.publish(marker_array)
+            self.get_logger().info(f"Published tcp at position {rope_positions[2]} to {self.topic}")
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='Rope Marker Publisher')
@@ -146,7 +188,8 @@ def main(args=None):
     rclpy.init(args=args)
     
     raw_port = 5090
-    corrected_port = 5100
+    corrected_port = 5091
+    intersection_port = 5092
     
     # Shared memory for rope positions
     shared_data = {"rope_positions": np.empty((0, 3), dtype=np.float64)}
@@ -159,6 +202,10 @@ def main(args=None):
         node_name = 'corrected_rope'
         port = corrected_port
         color = [1.0, 0.0, 0.0] # red
+    elif parsed_args.name == 'tcp':
+        node_name = 'tcp_points'
+        port = intersection_port
+        color = [0.0, 0.0, 1.0]
     else:
         raise ValueError("Invalid rope type")
     
