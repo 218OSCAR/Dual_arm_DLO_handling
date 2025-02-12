@@ -25,6 +25,9 @@
 #include <mutex>
 #include <condition_variable>
 #include <nlohmann/json.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Vector3.h>
+#include <moveit/move_group_interface/move_group_interface.h>
 
 //initiate the udp server
 using boost::asio::ip::udp;
@@ -33,11 +36,14 @@ using json = nlohmann::json;
 std::atomic<bool> udp_running(true);
 std::mutex grasp_point_mutex;
 std::mutex joint_positions_mutex;
+std::mutex ee_pose_mutex;
 std::condition_variable udp_condition_variable;
 std::condition_variable joint_positions_condition_variable;
 // std::array<double, 3> grasp_point = {0.0, 0.0, 0.0}; // default value
 std::array<double, 6> grasp_point = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+std::array<double, 3> grasp_tangent = {0.0, 1.0, 0.0}; // default value
 std::array<double, 6> joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+std::array<double, 6> ee_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("mtc_dual_arm_real");
 namespace mtc = moveit::task_constructor;
@@ -63,11 +69,15 @@ void udpReceiverRight(const std::string& host, int port) {
       // auto rx = received_json["data"]["init_grasp_rotation"]["rx"];
       // auto ry = received_json["data"]["init_grasp_rotation"]["ry"];
       // auto rz = received_json["data"]["init_grasp_rotation"]["rz"];
+      auto tx = received_json["data"]["init_grasp_tangent"]["x"];
+      auto ty = received_json["data"]["init_grasp_tangent"]["y"];
+      auto tz = received_json["data"]["init_grasp_tangent"]["z"];
 
       // update the grasp point
       {
         std::lock_guard<std::mutex> lock(grasp_point_mutex);
         grasp_point = {x, y, z};
+        grasp_tangent = {tx, ty, tz};
         // grasp_point = {x, y, z,rx,ry,rz};
       }
       udp_condition_variable.notify_one();
@@ -97,18 +107,24 @@ void udpReceiverLeft(const std::string& host, int port) {
       // check if the received data is an array
       if (received_json.is_array()) {
         // extract the joint positions
-        auto current_q = received_json;
+        std::vector<double> current_ee(received_json.begin(), received_json.begin() + 6);
+        std::vector<double> current_q(received_json.begin() + 6, received_json.end());
 
         // update the grasp point
         {
-          std::lock_guard<std::mutex> lock(joint_positions_mutex);
+          std::lock_guard<std::mutex> joint_lock(joint_positions_mutex);
           for (size_t i = 0; i < joint_positions.size() && i < current_q.size(); ++i) {
             joint_positions[i] = current_q[i];
+          }
+          std::lock_guard<std::mutex> cartesian_lock(ee_pose_mutex);
+          for (size_t i = 0; i < ee_pose.size() && i < current_ee.size(); ++i) {
+            ee_pose[i] = current_ee[i];
           }
         }
         joint_positions_condition_variable.notify_one();
 
-        std::cout << "Received left arm joint position: " << current_q << std::endl;
+        // std::cout << "Received left arm tcp position: " << current_ee << std::endl;
+        // std::cout << "Received left arm joint position: " << current_q << std::endl;
       } else {
         std::cerr << "Received data is not an array" << std::endl;
       }
@@ -141,7 +157,8 @@ private:
   // mtc::Task createTask();
   mtc::Task createLeftArmTask();
   mtc::Task createLeftArmSyncTask();
-  mtc::Task createRightArmTask();
+  mtc::Task createRightArmTask(tf2::Quaternion q2);
+  tf2::Matrix3x3 rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot);
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
 
@@ -149,14 +166,15 @@ private:
   // std::atomic<bool> stop_thread_{false};  // Thread stop flag
   // geometry_msgs::msg::Pose received_pose_;
   rclcpp::Node::SharedPtr node_;
-
+  moveit::planning_interface::MoveGroupInterface left_move_group_;
 
 };
 
 
 
 MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
-  : node_{ std::make_shared<rclcpp::Node>("mtc_node", options) }
+  : node_{ std::make_shared<rclcpp::Node>("mtc_node", options) },
+    left_move_group_(node_, "left_ur_manipulator")  // for dual arm or single arm
 {
   // udp_thread_ = std::thread(&MTCTaskNode::udpReceive, this);  // Start the thread
   // RCLCPP_INFO(node_->get_logger(), "UDP receive thread started.");
@@ -352,6 +370,19 @@ void MTCTaskNode::doTask()
   }
   RCLCPP_INFO(LOGGER, "Left arm sync task executed successfully");
 
+  // get the orientation of the left end effector from planning scene
+  geometry_msgs::msg::PoseStamped left_current_pose = left_move_group_.getCurrentPose("left_robotiq_85_base_link");
+  auto left_ee_orientation = left_current_pose.pose.orientation; 
+  // get rotation matrix from quaternion
+  tf2::Quaternion left_ee_quat(left_ee_orientation.x, left_ee_orientation.y, left_ee_orientation.z, left_ee_orientation.w);
+  tf2::Matrix3x3 left_ee_rot(left_ee_quat);
+  tf2::Matrix3x3 rot_ee2object(
+    0, 1, 0,
+    0, 0, 1,
+    1, 0, 0
+  );
+  tf2::Matrix3x3 left_object_rot = rot_ee2object * left_ee_rot;
+
   /* planning and execution for the right arm to grasp the object */
   RCLCPP_INFO(LOGGER, "Waiting for grasp point via UDP...");
   {
@@ -361,9 +392,14 @@ void MTCTaskNode::doTask()
     });
   }
   RCLCPP_INFO(LOGGER, "Grasp point received: [%f, %f, %f]", grasp_point[0], grasp_point[1], grasp_point[2]);
+  RCLCPP_INFO(LOGGER, "Grasp tangent received: [%f, %f, %f]", grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
 
+  tf2::Vector3 cable_tangent(grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
+  tf2::Matrix3x3 right_object_rot = rightGraspOrientation(cable_tangent, left_object_rot);
+  tf2::Quaternion right_object_quat;
+  right_object_rot.getRotation(right_object_quat);
 
-  mtc::Task right_task = createRightArmTask();  
+  mtc::Task right_task = createRightArmTask(right_object_quat);  
   try
   {
     right_task.init();
@@ -393,6 +429,49 @@ void MTCTaskNode::doTask()
   return;
 }
 
+tf2::Matrix3x3 MTCTaskNode::rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot)
+{
+// 'cable_tangent': tf2::Vector3, the rope tangent at the grasp
+// 'left_object_rot': tf2::Matrix3x3, the old orientation
+// We want new orientation s.t. x-axis = cable_tangent.
+
+tf2::Vector3 x_new = cable_tangent.normalized(); // new X = rope tangent
+
+// Step 2: choose an old axis to preserve as much as possible
+tf2::Vector3 z_old = left_object_rot.getColumn(2); // old Z
+
+// Step 3: project z_old so it's perpendicular to x_new
+tf2::Vector3 z_new_raw = z_old - (z_old.dot(x_new))*x_new;
+double length_z_new = z_new_raw.length();
+if (length_z_new < 1e-9)
+{
+  // fallback if z_old is parallel to x_new
+  tf2::Vector3 fallback(0,0,1); 
+  if (fabs(fallback.dot(x_new)) > 0.99) 
+    fallback = tf2::Vector3(0,1,0);
+  z_new_raw = fallback - fallback.dot(x_new)*x_new;
+  length_z_new = z_new_raw.length();
+}
+tf2::Vector3 z_new = z_new_raw / length_z_new;
+
+// Step 4: y_new = z_new x x_new (right-handed)
+tf2::Vector3 y_new = z_new.cross(x_new);
+y_new.normalize();
+
+// Step 5: Build the new orientation
+tf2::Matrix3x3 left_object_new(
+    x_new.x(), y_new.x(), z_new.x(),
+    x_new.y(), y_new.y(), z_new.y(),
+    x_new.z(), y_new.z(), z_new.z()
+);
+
+// (Optional) Convert to quaternion
+tf2::Quaternion object_q;
+left_object_new.getRotation(object_q);
+
+return left_object_new;
+
+}
 
 mtc::Task MTCTaskNode::createLeftArmTask()
 {
@@ -644,12 +723,12 @@ mtc::Task MTCTaskNode::createLeftArmTask()
   //   place_left->insert(std::move(stage_rotate_ee));
   // }
   
-  {
-    auto stage = std::make_unique<mtc::stages::MoveTo>("open left hand", interpolation_planner);
-    stage->setGroup(left_hand_group_name);
-    stage->setGoal("gripper_open");
-    place_left->insert(std::move(stage));
-  }
+  // {
+  //   auto stage = std::make_unique<mtc::stages::MoveTo>("open left hand", interpolation_planner);
+  //   stage->setGroup(left_hand_group_name);
+  //   stage->setGoal("gripper_open");
+  //   place_left->insert(std::move(stage));
+  // }
   {
     auto stage =
         std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (left_gripper,object)");
@@ -734,7 +813,8 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
   
   // 3 options of the solvers
   auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_);
-  auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+  auto joint_interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+  auto cartesian_interpolation_planner = std::make_shared<mtc::solvers::CartesianPath>();
 
   //attach the object to the hand
   {
@@ -753,12 +833,12 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
                           false);
     task.add(std::move(stage));
   }
-  // move to synchronization position
+  // move to synchronization joint position
   {
     // set Goal from joint positions
     std::map<std::string, double> joint_goal;
     {
-      std::lock_guard<std::mutex> lock(joint_positions_mutex);
+      std::lock_guard<std::mutex> joint_lock(joint_positions_mutex);
       joint_goal = {{"left_shoulder_pan_joint", joint_positions[0]},
                     {"left_shoulder_lift_joint", joint_positions[1]},
                     {"left_elbow_joint", joint_positions[2]},
@@ -767,11 +847,41 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
                     {"left_wrist_3_joint", joint_positions[5]}};
     }
 
-    auto stage_move_to = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", interpolation_planner);
-    stage_move_to->setGroup(left_arm_group_name);
-    stage_move_to->setGoal(joint_goal);
-    task.add(std::move(stage_move_to));
+    auto stage_move_to_joint = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", joint_interpolation_planner);
+    stage_move_to_joint->setGroup(left_arm_group_name);
+    stage_move_to_joint->setGoal(joint_goal);
+    task.add(std::move(stage_move_to_joint));
   }
+  // // further move to synchronization cartesian ee pose
+  // {
+  //   // set Goal from ee pose
+  //   geometry_msgs::msg::PoseStamped ee_goal;
+  //   {
+  //     std::lock_guard<std::mutex> cartesian_lock(ee_pose_mutex);
+  //     ee_goal.header.frame_id = "left_base_link";
+  //     ee_goal.pose.position.x = ee_pose[0];
+  //     ee_goal.pose.position.y = ee_pose[1];
+  //     ee_goal.pose.position.z = ee_pose[2];
+
+  //     // Convert Euler angles (RX, RY, RZ) to quaternion
+  //     tf2::Quaternion quaternion;
+  //     quaternion.setRPY(ee_pose[3], ee_pose[4], ee_pose[5]);
+
+  //     // Set the orientation of ee_goal
+  //     ee_goal.pose.orientation = tf2::toMsg(quaternion);
+  //   }
+
+  //   // IK frame at TCP
+  //   Eigen::Isometry3d grasp_frame_transform = Eigen::Isometry3d::Identity();
+  //   grasp_frame_transform.translation().z() = 0.197;
+
+  //   auto stage_move_to_cartesian = std::make_unique<mtc::stages::MoveTo>("move to synchronization cartesian pose", cartesian_interpolation_planner);
+  //   stage_move_to_cartesian->setGroup(left_arm_group_name);
+  //   stage_move_to_cartesian->setGoal(ee_goal);
+  //   stage_move_to_cartesian->setIKFrame(grasp_frame_transform, left_hand_frame);
+  //   task.add(std::move(stage_move_to_cartesian));
+  // }
+
   // detach the object
   {
     auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object left");
@@ -782,7 +892,7 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
   return task;
 }
 
-mtc::Task MTCTaskNode::createRightArmTask()
+mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
 {
   mtc::Task task;
   task.stages()->setName("right arm task");
@@ -801,7 +911,7 @@ mtc::Task MTCTaskNode::createRightArmTask()
     std::lock_guard<std::mutex> lock(grasp_point_mutex);
     pose2.position.x = grasp_point[0];
     pose2.position.y = grasp_point[1];
-    pose2.position.z = grasp_point[2];
+    pose2.position.z = grasp_point[2]-0.03;
   }
 
   // pose2.position.x = 0.0;
@@ -810,8 +920,8 @@ mtc::Task MTCTaskNode::createRightArmTask()
   // pose2.position.x = 0.82;
   // pose2.position.y = -0.04;
   // pose2.position.z = 0.47;
-  tf2::Quaternion q2;
-  q2.setRPY(0, 0, 0);  // Roll (X), Pitch (Y), Yaw (Z)
+  // tf2::Quaternion q2;
+  // q2.setRPY(0, 0, 0);  // Roll (X), Pitch (Y), Yaw (Z)
   // q2.setRPY(grasp_point[3], grasp_point[4], grasp_point[5]);  // Roll (X), Pitch (Y), Yaw (Z)
   pose2.orientation = tf2::toMsg(q2);
   // pose.orientation.w = 1.0;
@@ -898,11 +1008,12 @@ mtc::Task MTCTaskNode::createRightArmTask()
     stage->setAngleDelta(M_PI / 12);
     stage->setMonitoredStage(current_state_ptr);  // Hook into current state
     Eigen::Isometry3d grasp_right_frame_transform;
+    // Eigen::Isometry3d grasp_right_frame_transform = Eigen::Isometry3d::Identity();
     Eigen::Quaterniond q = Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX()) *
-                          Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitY()) *
-                          Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
+                          Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) *
+                          Eigen::AngleAxisd(0, Eigen::Vector3d::UnitZ());
     grasp_right_frame_transform.linear() = q.matrix();
-    grasp_right_frame_transform.translation().z() = 0.10;
+    grasp_right_frame_transform.translation().z() = 0.1034;
     // grasp_right_frame_transform.translation().y() = 0.05;//Grasp one end of the object so that it is easier to hand it over to another arm
 
     // Compute IK
