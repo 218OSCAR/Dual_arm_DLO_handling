@@ -35,15 +35,17 @@ using json = nlohmann::json;
 
 std::atomic<bool> udp_running(true);
 std::mutex grasp_point_mutex;
-std::mutex joint_positions_mutex;
-std::mutex ee_pose_mutex;
+std::mutex left_joint_positions_mutex;
+std::mutex left_ee_pose_mutex;
 std::condition_variable udp_condition_variable;
-std::condition_variable joint_positions_condition_variable;
+std::condition_variable left_joint_positions_condition_variable;
 // std::array<double, 3> grasp_point = {0.0, 0.0, 0.0}; // default value
 std::array<double, 6> grasp_point = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 std::array<double, 3> grasp_tangent = {0.0, 1.0, 0.0}; // default value
-std::array<double, 6> joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
-std::array<double, 6> ee_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+// std::array<double, 6> left_joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+std::vector<double> left_joint_positions(6, 0.0);  // Default size 6
+std::vector<double> left_ee_pose(6, 0.0); // Default size 6
+// std::array<double, 6> ee_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("mtc_dual_arm_real");
 namespace mtc = moveit::task_constructor;
@@ -90,7 +92,15 @@ void udpReceiverRight(const std::string& host, int port) {
   }
 }
 
-void udpReceiverLeft(const std::string& host, int port) {
+void udpReceiverLeft(const std::string& host, int port,
+                    // std::array<double, 6>& joint_positions,
+                    std::vector<double>& joint_positions,
+                    std::mutex& joint_positions_mutex,
+                    std::condition_variable& joint_positions_condition_variable,
+                    std::vector<double>& ee_pose,
+                    std::mutex& ee_pose_mutex
+                    )
+{
   try {
     boost::asio::io_context io_context;
     udp::socket socket(io_context, udp::endpoint(boost::asio::ip::make_address(host), port));
@@ -113,13 +123,15 @@ void udpReceiverLeft(const std::string& host, int port) {
         // update the grasp point
         {
           std::lock_guard<std::mutex> joint_lock(joint_positions_mutex);
-          for (size_t i = 0; i < joint_positions.size() && i < current_q.size(); ++i) {
-            joint_positions[i] = current_q[i];
-          }
+          joint_positions = current_q;
+          // for (size_t i = 0; i < joint_positions.size() && i < current_q.size(); ++i) {
+          //   joint_positions[i] = current_q[i];
+          // }
           std::lock_guard<std::mutex> cartesian_lock(ee_pose_mutex);
-          for (size_t i = 0; i < ee_pose.size() && i < current_ee.size(); ++i) {
-            ee_pose[i] = current_ee[i];
-          }
+          ee_pose = current_ee;
+          // for (size_t i = 0; i < ee_pose.size() && i < current_ee.size(); ++i) {
+          //   ee_pose[i] = current_ee[i];
+          // }
         }
         joint_positions_condition_variable.notify_one();
 
@@ -336,12 +348,12 @@ void MTCTaskNode::doTask()
   // Note: this step is necessary if the left arm is moved manually to a certain position
   RCLCPP_INFO(LOGGER, "Waiting for joint positions via UDP...");
   {
-    std::unique_lock<std::mutex> lock(joint_positions_mutex);
-    joint_positions_condition_variable.wait(lock, []() {
-      return !std::all_of(joint_positions.begin(), joint_positions.end(), [](double v) { return v == 0.0; });
+    std::unique_lock<std::mutex> lock(left_joint_positions_mutex);
+    left_joint_positions_condition_variable.wait(lock, []() {
+      return !std::all_of(left_joint_positions.begin(), left_joint_positions.end(), [](double v) { return v == 0.0; });
     });
   }
-  RCLCPP_INFO(LOGGER, "UR joint position received: [%f, %f, %f, %f, %f, %f]", joint_positions[0], joint_positions[1], joint_positions[2], joint_positions[3], joint_positions[4], joint_positions[5]);
+  RCLCPP_INFO(LOGGER, "UR joint position received: [%f, %f, %f, %f, %f, %f]", left_joint_positions[0], left_joint_positions[1], left_joint_positions[2], left_joint_positions[3], left_joint_positions[4], left_joint_positions[5]);
 
   mtc::Task left_sync_task = createLeftArmSyncTask();
   try
@@ -838,13 +850,13 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
     // set Goal from joint positions
     std::map<std::string, double> joint_goal;
     {
-      std::lock_guard<std::mutex> joint_lock(joint_positions_mutex);
-      joint_goal = {{"left_shoulder_pan_joint", joint_positions[0]},
-                    {"left_shoulder_lift_joint", joint_positions[1]},
-                    {"left_elbow_joint", joint_positions[2]},
-                    {"left_wrist_1_joint", joint_positions[3]},
-                    {"left_wrist_2_joint", joint_positions[4]},
-                    {"left_wrist_3_joint", joint_positions[5]}};
+      std::lock_guard<std::mutex> joint_lock(left_joint_positions_mutex);
+      joint_goal = {{"left_shoulder_pan_joint", left_joint_positions[0]},
+                    {"left_shoulder_lift_joint", left_joint_positions[1]},
+                    {"left_elbow_joint", left_joint_positions[2]},
+                    {"left_wrist_1_joint", left_joint_positions[3]},
+                    {"left_wrist_2_joint", left_joint_positions[4]},
+                    {"left_wrist_3_joint", left_joint_positions[5]}};
     }
 
     auto stage_move_to_joint = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", joint_interpolation_planner);
@@ -1163,7 +1175,13 @@ int main(int argc, char** argv)
   
   //start the UDP receiver thread
   std::thread udp_thread_right(udpReceiverRight, "192.168.1.7", 5060);
-  std::thread udp_thread_left(udpReceiverLeft,  "192.168.1.7", 5070);
+  std::thread udp_thread_left(udpReceiverLeft,  "192.168.1.7", 5070,
+                              std::ref(left_joint_positions),
+                              std::ref(left_joint_positions_mutex),
+                              std::ref(left_joint_positions_condition_variable),
+                              std::ref(left_ee_pose),
+                              std::ref(left_ee_pose_mutex)
+                              );
 
   auto spin_thread = std::make_unique<std::thread>([&executor, &mtc_task_node]() {
     executor.add_node(mtc_task_node->getNodeBaseInterface());
@@ -1181,7 +1199,7 @@ int main(int argc, char** argv)
     udp_thread_right.join();
   }
 
-  joint_positions_condition_variable.notify_all();
+  left_joint_positions_condition_variable.notify_all();
   if (udp_thread_left.joinable()) {
     udp_thread_left.join();
   }
