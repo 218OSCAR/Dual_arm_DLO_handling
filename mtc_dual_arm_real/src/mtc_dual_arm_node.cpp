@@ -34,18 +34,29 @@ using boost::asio::ip::udp;
 using json = nlohmann::json;
 
 std::atomic<bool> udp_running(true);
-std::mutex grasp_point_mutex;
-std::mutex left_joint_positions_mutex;
-std::mutex left_ee_pose_mutex;
-std::condition_variable udp_condition_variable;
-std::condition_variable left_joint_positions_condition_variable;
+std::mutex grasp_point_mutex, 
+           left_joint_positions_mutex, 
+           right_joint_positions_mutex, 
+           mount_joint_positions_mutex, 
+           left_ee_pose_mutex,
+           right_ee_pose_mutex,
+           mount_ee_pose_mutex;
+std::condition_variable udp_condition_variable, 
+                        left_joint_positions_condition_variable, 
+                        right_joint_positions_condition_variable, 
+                        mount_joint_positions_condition_variable;
 // std::array<double, 3> grasp_point = {0.0, 0.0, 0.0}; // default value
 std::array<double, 6> grasp_point = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 std::array<double, 3> grasp_tangent = {0.0, 1.0, 0.0}; // default value
 // std::array<double, 6> left_joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 std::vector<double> left_joint_positions(6, 0.0);  // Default size 6
-std::vector<double> left_ee_pose(6, 0.0); // Default size 6
+std::vector<double> right_joint_positions(7, 0.0); // Default size 7
+std::vector<double> mount_joint_positions(7, 0.0); // Default size 7
 // std::array<double, 6> ee_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
+std::vector<double> left_ee_pose(6, 0.0); // Default size 6
+std::vector<double> right_ee_pose(6, 0.0); // Default size 6
+std::vector<double> mount_ee_pose(6, 0.0); // Default size 6
+
 
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("mtc_dual_arm_real");
 namespace mtc = moveit::task_constructor;
@@ -92,7 +103,7 @@ void udpReceiverRight(const std::string& host, int port) {
   }
 }
 
-void udpReceiverLeft(const std::string& host, int port,
+void udpReceiverSync(const std::string& host, int port,
                     // std::array<double, 6>& joint_positions,
                     std::vector<double>& joint_positions,
                     std::mutex& joint_positions_mutex,
@@ -160,7 +171,18 @@ public:
 
   void setupPlanningScene();
 
-  // void udpReceive();
+  // Robot group names
+  std::string left_arm_group_name;
+  std::string left_hand_group_name;
+  std::string left_hand_frame;
+
+  std::string right_arm_group_name;
+  std::string right_hand_group_name ;
+  std::string right_hand_frame;
+
+  std::string mount_group_name;
+  std::string mount_hand_group_name;
+  std::string mount_hand_frame;
 
   // void updateObjectPose(const geometry_msgs::msg::Pose& new_pose);
 
@@ -180,9 +202,10 @@ private:
   rclcpp::Node::SharedPtr node_;
   moveit::planning_interface::MoveGroupInterface left_move_group_;
 
+  // Helper methods for internal setup
+  void initializeGroups();
+
 };
-
-
 
 MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
   : node_{ std::make_shared<rclcpp::Node>("mtc_node", options) },
@@ -190,11 +213,30 @@ MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
 {
   // udp_thread_ = std::thread(&MTCTaskNode::udpReceive, this);  // Start the thread
   // RCLCPP_INFO(node_->get_logger(), "UDP receive thread started.");
+
+  initializeGroups();
 }
 
 rclcpp::node_interfaces::NodeBaseInterface::SharedPtr MTCTaskNode::getNodeBaseInterface()
 {
   return node_->get_node_base_interface();
+}
+
+void MTCTaskNode::initializeGroups()
+{
+  // Define robot group names
+  left_arm_group_name = "left_ur_manipulator";
+  left_hand_group_name = "left_gripper";
+  left_hand_frame = "left_robotiq_85_base_link";
+
+  right_arm_group_name = "right_panda_arm";
+  right_hand_group_name = "right_hand";
+  right_hand_frame = "right_panda_hand";
+
+  mount_group_name = "mount_panda_arm";
+  mount_hand_group_name = "mount_hand";
+  mount_hand_frame = "mount_panda_hand";
+
 }
 
 // MTCTaskNode::~MTCTaskNode()
@@ -206,33 +248,6 @@ rclcpp::node_interfaces::NodeBaseInterface::SharedPtr MTCTaskNode::getNodeBaseIn
 //   }
 // }
 
-
-// void MTCTaskNode::udpReceive() {
-//   using boost::asio::ip::udp;
-
-//   boost::asio::io_context io_context;
-//   udp::socket socket(io_context, udp::endpoint(udp::v4(), 12345));  // 12345 is the port number
-//   char recv_buffer[1024];
-
-//   while (rclcpp::ok()) {
-//     udp::endpoint sender_endpoint;
-//     size_t len = socket.receive_from(boost::asio::buffer(recv_buffer), sender_endpoint);
-
-//     // Parse the received coordinate data
-//     float x, y, z;
-//     std::istringstream iss(std::string(recv_buffer, len));
-//     iss >> x >> y >> z;
-
-//     geometry_msgs::msg::Pose new_pose;
-//     new_pose.position.x = x;
-//     new_pose.position.y = y;
-//     new_pose.position.z = z;
-//     new_pose.orientation.w = 1.0;  
-
-//     updateObjectPose(new_pose);
-//     RCLCPP_INFO(node_->get_logger(), "UDP receive loop exited.");
-//   }
-// }
 // void MTCTaskNode::updateObjectPose(const geometry_msgs::msg::Pose& new_pose) {
 //   received_pose_ = new_pose;
 
@@ -491,9 +506,6 @@ mtc::Task MTCTaskNode::createLeftArmTask()
   task.stages()->setName("left arm task");
   task.loadRobotModel(node_);
 
-  const auto& left_arm_group_name = "left_ur_manipulator";
-  const auto& left_hand_group_name = "left_gripper";
-  const auto& left_hand_frame = "left_robotiq_85_base_link";
   std::vector<double> delta = {0, 0, 0};
   std::vector<double> orients = {0, 0, 0, 1};
 
@@ -800,9 +812,6 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
   task.stages()->setName("left arm task");
   task.loadRobotModel(node_);
 
-  const auto& left_arm_group_name = "left_ur_manipulator";
-  const auto& left_hand_group_name = "left_gripper";
-  const auto& left_hand_frame = "left_robotiq_85_base_link";
   std::vector<double> delta = {0, 0, 0};
   std::vector<double> orients = {0, 0, 0, 1};
 
@@ -942,9 +951,6 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
   moveit::planning_interface::PlanningSceneInterface psi2;
   psi2.applyCollisionObject(object2);
 
-  const auto& right_arm_group_name = "right_panda_arm";
-  const auto& right_hand_group_name = "right_hand";
-  const auto& right_hand_frame = "right_panda_hand";
   std::vector<double> delta = {0, 0, 0};
   std::vector<double> orients = {0, 0, 0, 1};
 
@@ -1175,13 +1181,29 @@ int main(int argc, char** argv)
   
   //start the UDP receiver thread
   std::thread udp_thread_right(udpReceiverRight, "192.168.1.7", 5060);
-  std::thread udp_thread_left(udpReceiverLeft,  "192.168.1.7", 5070,
+  std::thread udp_thread_left_sync(udpReceiverSync,  "192.168.1.7", 5070,
                               std::ref(left_joint_positions),
                               std::ref(left_joint_positions_mutex),
                               std::ref(left_joint_positions_condition_variable),
                               std::ref(left_ee_pose),
                               std::ref(left_ee_pose_mutex)
                               );
+
+  std::thread udp_thread_right_sync(udpReceiverSync,  "192.168.1.7", 5080,
+                              std::ref(right_joint_positions),
+                              std::ref(right_joint_positions_mutex),
+                              std::ref(right_joint_positions_condition_variable),
+                              std::ref(right_ee_pose),
+                              std::ref(right_ee_pose_mutex)
+                              );
+  
+  std::thread udp_thread_mount_sync(udpReceiverSync,  "192.168.1.7", 5090,
+                              std::ref(mount_joint_positions),
+                              std::ref(mount_joint_positions_mutex),
+                              std::ref(mount_joint_positions_condition_variable),
+                              std::ref(mount_ee_pose),
+                              std::ref(mount_ee_pose_mutex)
+                              );                            
 
   auto spin_thread = std::make_unique<std::thread>([&executor, &mtc_task_node]() {
     executor.add_node(mtc_task_node->getNodeBaseInterface());
@@ -1200,8 +1222,18 @@ int main(int argc, char** argv)
   }
 
   left_joint_positions_condition_variable.notify_all();
-  if (udp_thread_left.joinable()) {
-    udp_thread_left.join();
+  if (udp_thread_left_sync.joinable()) {
+    udp_thread_left_sync.join();
+  }
+
+  right_joint_positions_condition_variable.notify_all();
+  if (udp_thread_right_sync.joinable()) {
+    udp_thread_right_sync.join();
+  }
+
+  mount_joint_positions_condition_variable.notify_all();
+  if (udp_thread_mount_sync.joinable()) {
+    udp_thread_mount_sync.join();
   }
 
   spin_thread->join();
