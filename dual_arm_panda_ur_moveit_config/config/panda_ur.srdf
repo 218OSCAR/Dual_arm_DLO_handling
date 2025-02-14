@@ -138,13 +138,20 @@
   <disable_collisions link1="table_2" link2="mount_panda_link8" reason="Never"/>
 
   <disable_collisions link1="base_2" link2="left_base_link" reason="Adjacent"/>
+  <disable_collisions link1="base_2" link2="right_panda_base" reason="Adjacent"/>
   <disable_collisions link1="base_2" link2="right_panda_link0" reason="Adjacent"/>
   <disable_collisions link1="base_2" link2="right_panda_link1" reason="Default"/>
   <disable_collisions link1="base_2" link2="right_panda_link2" reason="Never"/>
   <disable_collisions link1="base_2" link2="right_panda_link3" reason="Never"/>
   <disable_collisions link1="base_2" link2="right_panda_link4" reason="Never"/>
+  <disable_collisions link1="right_panda_base" link2="right_panda_link0" reason="Adjacent"/>
+  <disable_collisions link1="right_panda_base" link2="right_panda_link1" reason="Default"/>
+  <disable_collisions link1="right_panda_base" link2="right_panda_link2" reason="Never"/>
+  <disable_collisions link1="right_panda_base" link2="right_panda_link3" reason="Never"/>
+  <disable_collisions link1="right_panda_base" link2="right_panda_link4" reason="Never"/>
 
   <disable_collisions link1="base_3" link2="left_base_link" reason="Adjacent"/>
+  <disable_collisions link1="base_3" link2="mount_panda_base" reason="Adjacent"/>
   <disable_collisions link1="base_3" link2="right_panda_link0" reason="Adjacent"/>
   <disable_collisions link1="base_3" link2="right_panda_link1" reason="Default"/>
   <disable_collisions link1="base_3" link2="right_panda_link2" reason="Never"/>
@@ -155,6 +162,12 @@
   <disable_collisions link1="base_3" link2="mount_panda_link2" reason="Never"/>
   <disable_collisions link1="base_3" link2="mount_panda_link3" reason="Never"/>
   <disable_collisions link1="base_3" link2="mount_panda_link4" reason="Never"/>
+  <disable_collisions link1="mount_panda_base" link2="mount_panda_link0" reason="Adjacent"/>
+  <disable_collisions link1="mount_panda_base" link2="mount_panda_link1" reason="Default"/>
+  <disable_collisions link1="mount_panda_base" link2="mount_panda_link2" reason="Never"/>
+  <disable_collisions link1="mount_panda_base" link2="mount_panda_link3" reason="Never"/>
+  <disable_collisions link1="mount_panda_base" link2="mount_panda_link4" reason="Never"/>
+
 
 
   <!-- Left arm -->
@@ -232,8 +245,8 @@
   <disable_collisions link1="mount_panda_link5" link2="mount_panda_link6" reason="Adjacent"/>
   <disable_collisions link1="mount_panda_link6" link2="mount_panda_link7" reason="Adjacent"/>
   <disable_collisions link1="mount_panda_hand" link2="mount_panda_leftfinger" reason="Adjacent"/>
-  <disable_collisions link1="mount_panda_hand" link2="mount_panda_mountfinger" reason="Adjacent"/>
-  <disable_collisions link1="mount_panda_leftfinger" link2="mount_panda_mountfinger" reason="Default"/>
+  <disable_collisions link1="mount_panda_hand" link2="mount_panda_rightfinger" reason="Adjacent"/>
+  <disable_collisions link1="mount_panda_leftfinger" link2="mount_panda_rightfinger" reason="Default"/>
   <disable_collisions link1="mount_panda_hand" link2="mount_panda_link3" reason="Never"/>
   <disable_collisions link1="mount_panda_hand" link2="mount_panda_link4" reason="Never"/>
   <disable_collisions link1="mount_panda_hand" link2="mount_panda_link6" reason="Never"/>
@@ -242,10 +255,10 @@
   <disable_collisions link1="mount_panda_leftfinger" link2="mount_panda_link4" reason="Never"/>
   <disable_collisions link1="mount_panda_leftfinger" link2="mount_panda_link6" reason="Never"/>
   <disable_collisions link1="mount_panda_leftfinger" link2="mount_panda_link7" reason="Never"/>
-  <disable_collisions link1="mount_panda_link3" link2="mount_panda_mountfinger" reason="Never"/>
-  <disable_collisions link1="mount_panda_link4" link2="mount_panda_mountfinger" reason="Never"/>
-  <disable_collisions link1="mount_panda_link6" link2="mount_panda_mountfinger" reason="Never"/>
-  <disable_collisions link1="mount_panda_link7" link2="mount_panda_mountfinger" reason="Never"/>
+  <disable_collisions link1="mount_panda_link3" link2="mount_panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="mount_panda_link4" link2="mount_panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="mount_panda_link6" link2="mount_panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="mount_panda_link7" link2="mount_panda_rightfinger" reason="Never"/>
 
   <!--GROUPS: Representation of a set of joints and links. This can be useful for specifying DOF to plan for, defining arms, end effectors, etc-->
   <!--LINKS: When a link is specified, the parent joint of that link (if it exists) is automatically included-->
