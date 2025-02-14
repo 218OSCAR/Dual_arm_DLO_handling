@@ -241,15 +241,77 @@
         parent="world"
         initial_positions_file="$(arg right_initial_positions_file)">
         <!-- <origin xyz="0.032 1.315 0.945" rpy="0 0 -1.5708" /> -->
-        <origin xyz="0.004 1.315 0.945" rpy="0 0 -1.5708" />
+        <origin xyz="-0.024 1.315 0.965" rpy="0 0 -1.5708" />
+        <!-- box position in right panda frame -->
+        <!-- 0.385 0.256 0.047 -->
     </xacro:panda_arm>
 
-    <!-- Right arm -->
+    <!-- Right arm base -->
+    <link name="right_panda_base">
+        <visual>
+        <origin xyz="-0.024 1.355 0.955" rpy="0 0 0" />
+        <geometry>
+            <box size="0.20 0.24 0.02" />
+        </geometry>
+        <material name="White">
+            <color rgba="1.0 1.0 1.0 1.0" />
+        </material>
+        </visual>
+        <collision>
+        <origin xyz="-0.024 1.355 0.955" rpy="0 0 0" />
+        <geometry>
+            <box size="0.20 0.24 0.02" />
+        </geometry>
+        </collision>
+        <inertial>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <mass value="10.0"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.001" iyy="0.0" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <joint name="right_panda_base_to_world" type="fixed">
+            <parent link="world"/>
+            <child link="right_panda_base"/>
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- Mount arm -->
     <xacro:panda_arm
         name="mount_panda"
         prefix="mount_"
         parent="world"
         initial_positions_file="$(arg right_initial_positions_file)">
-        <origin xyz="0.804 1.315 0.945" rpy="0 0 -1.5708" />
+        <origin xyz="0.531 1.315 0.965" rpy="0 0 -1.5708" />
     </xacro:panda_arm>
+
+    <!-- Mount arm base -->
+    <link name="mount_panda_base">
+        <visual>
+        <origin xyz="0.531 1.355 0.955" rpy="0 0 0" />
+        <geometry>
+            <box size="0.20 0.24 0.02" />
+        </geometry>
+        <material name="White">
+            <color rgba="1.0 1.0 1.0 1.0" />
+        </material>
+        </visual>
+        <collision>
+        <origin xyz="0.531 1.355 0.955" rpy="0 0 0" />
+        <geometry>
+            <box size="0.20 0.24 0.02" />
+        </geometry>
+        </collision>
+        <inertial>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <mass value="10.0"/>
+        <inertia ixx="0.001" ixy="0.0" ixz="0.001" iyy="0.0" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <joint name="mount_panda_base_to_world" type="fixed">
+            <parent link="world"/>
+            <child link="mount_panda_base"/>
+            <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
 </robot>
