@@ -57,6 +57,9 @@ std::vector<double> left_ee_pose(6, 0.0); // Default size 6
 std::vector<double> right_ee_pose(6, 0.0); // Default size 6
 std::vector<double> mount_ee_pose(6, 0.0); // Default size 6
 
+std::vector<std::string> left_ur_joint_names = {"left_shoulder_pan_joint", "left_shoulder_lift_joint", "left_elbow_joint", "left_wrist_1_joint", "left_wrist_2_joint", "left_wrist_3_joint"};
+std::vector<std::string> right_franka_joint_names = {"right_panda_joint1", "right_panda_joint2", "right_panda_joint3", "right_panda_joint4", "right_panda_joint5", "right_panda_joint6", "right_panda_joint7"};
+std::vector<std::string> mount_franka_joint_names = {"mount_panda_joint1", "mount_panda_joint2", "mount_panda_joint3", "mount_panda_joint4", "mount_panda_joint5", "mount_panda_joint6", "mount_panda_joint7"};
 
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("mtc_dual_arm_real");
 namespace mtc = moveit::task_constructor;
@@ -191,7 +194,15 @@ private:
   // mtc::Task createTask();
   mtc::Task createLeftArmTask();
   mtc::Task createLeftArmSyncTask();
-  mtc::Task createRightArmTask(tf2::Quaternion q2);
+  mtc::Task createArmSyncTask(bool attach_object, 
+                              std::string arm_group_name, 
+                              std::string hand_group_name, 
+                              std::string hand_frame,
+                              std::mutex& joint_positions_mutex,
+                              std::vector<double>& joint_positions,
+                              std::vector<std::string>& joint_names
+                              );
+  mtc::Task createRightArmTask(tf2::Quaternion q2); 
   tf2::Matrix3x3 rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot);
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
@@ -370,7 +381,11 @@ void MTCTaskNode::doTask()
   }
   RCLCPP_INFO(LOGGER, "UR joint position received: [%f, %f, %f, %f, %f, %f]", left_joint_positions[0], left_joint_positions[1], left_joint_positions[2], left_joint_positions[3], left_joint_positions[4], left_joint_positions[5]);
 
-  mtc::Task left_sync_task = createLeftArmSyncTask();
+  // mtc::Task left_sync_task = createLeftArmSyncTask();
+  mtc::Task left_sync_task = createArmSyncTask(true, left_arm_group_name, left_hand_group_name, left_hand_frame,
+                                              left_joint_positions_mutex, 
+                                              left_joint_positions, left_ur_joint_names
+                                              );
   try
   {
     left_sync_task.init();
@@ -907,6 +922,111 @@ mtc::Task MTCTaskNode::createLeftArmSyncTask(){
   {
     auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object left");
     stage->detachObject("object", left_hand_frame);
+    task.add(std::move(stage));
+  } 
+  
+  return task;
+}
+
+mtc::Task MTCTaskNode::createArmSyncTask(bool attach_object, 
+                                         std::string arm_group_name, 
+                                         std::string hand_group_name, 
+                                         std::string hand_frame,
+                                         std::mutex& joint_positions_mutex,
+                                         std::vector<double>& joint_positions,
+                                         std::vector<std::string>& joint_names
+                                         )
+{
+  mtc::Task task;
+  task.stages()->setName("synchronization arm task");
+  task.loadRobotModel(node_);
+
+  std::vector<double> delta = {0, 0, 0};
+  std::vector<double> orients = {0, 0, 0, 1};
+
+  task.setProperty("left_group", arm_group_name);
+  task.setProperty("left_eef", hand_group_name);
+  task.setProperty("left_ik_frame", hand_frame);
+
+  // Disable warnings for this line, as it's a variable that's set but not used in this example
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+    mtc::Stage* current_state_ptr = nullptr;  // Forward current_state on to grasp pose generator
+  #pragma GCC diagnostic pop
+
+
+  auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
+  current_state_ptr = stage_state_current.get();
+  task.add(std::move(stage_state_current));
+  
+  // 3 options of the solvers
+  auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_);
+  auto joint_interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+  auto cartesian_interpolation_planner = std::make_shared<mtc::solvers::CartesianPath>();
+
+  //attach the object to the hand
+  if (attach_object)
+  {
+    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object ");
+    stage->attachObject("object", hand_frame);
+    task.add(std::move(stage));
+  }
+  // forbid collision
+  {
+    auto stage =
+        std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision between gripper and object");
+    stage->allowCollisions("object",
+                          task.getRobotModel()
+                              ->getJointModelGroup(hand_group_name)
+                              ->getLinkModelNamesWithCollisionGeometry(),
+                          false);
+    task.add(std::move(stage));
+  }
+  // move to synchronization joint position
+  {
+    // set Goal from joint positions
+    std::map<std::string, double> joint_goal;
+    {
+      if (joint_positions.size() != joint_names.size()) {
+          std::cerr << "Error: joint_positions size (" << joint_positions.size() 
+                    << ") does not match joint_names size (" << joint_names.size() << ")" << std::endl;
+          return task;
+      }
+
+      std::lock_guard<std::mutex> joint_lock(joint_positions_mutex);
+  
+      // std::lock_guard<std::mutex> joint_lock(left_joint_positions_mutex);
+      // joint_goal = {{"left_shoulder_pan_joint", left_joint_positions[0]},
+      //               {"left_shoulder_lift_joint", left_joint_positions[1]},
+      //               {"left_elbow_joint", left_joint_positions[2]},
+      //               {"left_wrist_1_joint", left_joint_positions[3]},
+      //               {"left_wrist_2_joint", left_joint_positions[4]},
+      //               {"left_wrist_3_joint", left_joint_positions[5]}};
+
+      for (size_t i = 0; i < joint_names.size(); i++)
+      {
+        joint_goal[joint_names[i]] = joint_positions[i];
+      }
+
+      std::cout << "printing joint goal" << std::endl;
+      for (auto const& [key, val] : joint_goal)
+      {
+        std::cout << key << ": " << val << std::endl;
+      }
+
+    }
+
+    auto stage_move_to_joint = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", joint_interpolation_planner);
+    stage_move_to_joint->setGroup(arm_group_name);
+    stage_move_to_joint->setGoal(joint_goal);
+    task.add(std::move(stage_move_to_joint));
+  }
+
+  // detach the object
+  if (attach_object)
+  {
+    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object from arm");
+    stage->detachObject("object", hand_frame);
     task.add(std::move(stage));
   } 
   
