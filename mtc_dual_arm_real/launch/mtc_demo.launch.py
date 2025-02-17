@@ -97,6 +97,8 @@ def generate_launch_description():
         "left_gripper_controller",
         "right_arm_controller",
         "right_hand_controller",
+        "mount_arm_controller",
+        "mount_hand_controller",
     ]:
         load_controllers += [
             ExecuteProcess(

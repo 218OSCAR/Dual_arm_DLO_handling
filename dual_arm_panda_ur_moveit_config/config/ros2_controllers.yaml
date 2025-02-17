@@ -15,6 +15,12 @@ controller_manager:
     right_hand_controller:
       type: position_controllers/GripperActionController
 
+    mount_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    
+    mount_hand_controller:
+      type: position_controllers/GripperActionController
+
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
@@ -56,3 +62,23 @@ right_arm_controller:
 right_hand_controller:
   ros__parameters:
     joint: right_panda_finger_joint1
+
+mount_arm_controller:
+  ros__parameters:
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    joints:
+      - mount_panda_joint1
+      - mount_panda_joint2
+      - mount_panda_joint3
+      - mount_panda_joint4
+      - mount_panda_joint5
+      - mount_panda_joint6
+      - mount_panda_joint7
+
+mount_hand_controller:
+  ros__parameters:
+    joint: mount_panda_finger_joint1
