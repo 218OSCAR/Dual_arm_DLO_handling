@@ -160,12 +160,40 @@ class SolutionSubscriber(Node):
                         # smooth_file_path = os.path.join(os.path.dirname(__file__), 'saved_trajectories', 'smooth_real_world_traj_'+str(solution_id)+'.txt')
                         # smooth_file_name = os.path.basename(smooth_file_path)
                         smooth_file_path = 'smooth_real_world_traj_'+str(solution_id)+'.txt'
-                        smooth_file_name = str(solution_id)+'.txt'
-                        self.get_logger().info(f"file name {smooth_file_name}")
                         
                         # client_socket.send(f"{os.path.basename(smooth_file_path)}".encode())
                         # self.get_logger().info(f"send fbasename(smooth_file_path)ile name to mios at {server_host}")
-                        client_socket.send(smooth_file_path.encode('utf-8'))  
+                        client_socket.send(f"{smooth_file_path}".encode('utf-8'))  
+                        time.sleep(1)
+                        self.get_logger().info(f"Sent file name: {smooth_file_path}")
+                        
+                        # send the trajectory
+                        joint_traj_data = pickle.dumps(smooth_traj.q)
+                        client_socket.sendall(joint_traj_data)
+                        time.sleep(1)
+                        self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
+                        client_socket.close()
+                    elif "mount" in traj_joint_names[0]:  # right one is the panda robot
+                        
+                        client_socket = socket.socket()  # instantiate
+                        server_host = '192.168.1.13' # ip of the computer which controls the panda
+                        server_port = 12345
+                        client_socket.connect((server_host, server_port))
+                        self.get_logger().info(f"Connect to robot")
+                        time.sleep(1)
+                        
+                        command = "write"
+                        client_socket.send(f"{command}".encode('utf-8'))
+                        time.sleep(1)
+                        # send the name of the file
+                        # smooth_file_path = os.path.join(os.path.dirname(__file__), 'saved_trajectories', 'smooth_real_world_traj_'+str(solution_id)+'.txt')
+                        # smooth_file_name = os.path.basename(smooth_file_path)
+                        smooth_file_path = 'smooth_real_world_traj_'+str(solution_id)+'.txt'
+                        
+                        # client_socket.send(f"{os.path.basename(smooth_file_path)}".encode())
+                        # self.get_logger().info(f"send fbasename(smooth_file_path)ile name to mios at {server_host}")
+                        client_socket.send(f"{smooth_file_path}".encode('utf-8'))  
+                        time.sleep(1)
                         self.get_logger().info(f"Sent file name: {smooth_file_path}")
                         
                         # send the trajectory
@@ -187,7 +215,6 @@ class SolutionSubscriber(Node):
                     #     msg_to_mios.traj_id = [solution_id]
                     # client_socket.connect((server_host, server_port))
                     # send the write or read command
-                    
 
 
 
