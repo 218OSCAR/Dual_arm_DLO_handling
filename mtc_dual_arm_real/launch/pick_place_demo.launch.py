@@ -1,8 +1,16 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description():
+    skip_handover_flag = DeclareLaunchArgument(
+        'skip_handover',
+        default_value='false',
+        description='Flag to skip hand-over operation or not'
+    )
+    
     # moveit_config = MoveItConfigsBuilder("dual_arm_panda_ur").to_dict()
     moveit_config = (
         MoveItConfigsBuilder("dual_arm_panda_ur")
@@ -22,7 +30,8 @@ def generate_launch_description():
         output="screen",
         parameters=[
             moveit_config,
-        ],
+            {"skip_handover": LaunchConfiguration('skip_handover')}
+        ]
     )
 
-    return LaunchDescription([pick_place_demo])
+    return LaunchDescription([skip_handover_flag, pick_place_demo])

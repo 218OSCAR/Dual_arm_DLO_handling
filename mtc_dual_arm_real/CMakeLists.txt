@@ -24,6 +24,7 @@ ament_target_dependencies(
   mtc_dual_arm_node
   "moveit_task_constructor_core"
   "rclcpp"
+  moveit_visual_tools
 )
 
 install(TARGETS mtc_dual_arm_node
