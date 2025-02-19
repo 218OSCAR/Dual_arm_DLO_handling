@@ -325,6 +325,12 @@ private:
                               std::string hand_frame,
                               geometry_msgs::msg::PoseStamped goal_pose);
   mtc::Task createRightArmTask(tf2::Quaternion q2); 
+  mtc::Task createSampleGarspPoseTask(std::string arm_group_name, 
+                                      std::string hand_group_name, 
+                                      std::string hand_frame,
+                                      std::string object_id,
+                                      geometry_msgs::msg::PoseStamped object_pose,
+                                      bool enable_approach);
   tf2::Matrix3x3 rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot);
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
@@ -746,7 +752,6 @@ void MTCTaskNode::doMountingTask()
   RCLCPP_INFO(LOGGER, "Received right arm goal pose: [%f, %f, %f, %f, %f, %f, %f]", right_pose_in_world_frame.pose.position.x, right_pose_in_world_frame.pose.position.y, right_pose_in_world_frame.pose.position.z, right_pose_in_world_frame.pose.orientation.w, right_pose_in_world_frame.pose.orientation.x, right_pose_in_world_frame.pose.orientation.y, right_pose_in_world_frame.pose.orientation.z);
 
   auto right_task = createGoalPoseTask(right_arm_group_name, right_hand_group_name, right_hand_frame, right_pose_in_world_frame);
-  // auto right_task = createGoalPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, right_pose_in_world_frame);
 
   // {
   //   std::unique_lock<std::mutex> lock(right_joint_positions_mutex);
@@ -808,8 +813,8 @@ void MTCTaskNode::doMountingTask()
 
   geometry_msgs::msg::PoseStamped mount_pose_in_world_frame = getPoseTransform(mount_pose_in_mount_frame, "world");
   
-  // auto mount_task = createGoalPoseTask(right_arm_group_name, right_hand_group_name, right_hand_frame, mount_pose_in_world_frame);
-  auto mount_task = createGoalPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, mount_pose_in_world_frame);
+  // auto mount_task = createGoalPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, mount_pose_in_world_frame);
+  auto mount_task = createSampleGarspPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, "object3", mount_pose_in_world_frame, false);
   try
   {
     mount_task.init();
@@ -827,6 +832,8 @@ void MTCTaskNode::doMountingTask()
   }
 
   mount_task.introspection().publishSolution(*mount_task.solutions().front());
+
+  visual_tools_.prompt("[Publishing] Press 'next' to execute trajectory");
 
   auto mount_result = mount_task.execute(*mount_task.solutions().front());
   if (mount_result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
@@ -1512,10 +1519,163 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
   return task;
 }
 
+mtc::Task MTCTaskNode::createSampleGarspPoseTask(std::string arm_group_name, 
+                                                std::string hand_group_name, 
+                                                std::string hand_frame,
+                                                std::string object_id,
+                                                geometry_msgs::msg::PoseStamped object_pose,
+                                                bool enable_approach)
+{
+  mtc::Task task;
+  task.stages()->setName("sampe grasp pose task");
+  task.loadRobotModel(node_);
+
+  moveit_msgs::msg::CollisionObject object;
+  object.id = object_id;
+  object.header.frame_id = object_pose.header.frame_id;
+  object.primitives.resize(1);
+  object.primitives[0].type = shape_msgs::msg::SolidPrimitive::SPHERE;
+  object.primitives[0].dimensions = { 0.02 };
+  object.pose = object_pose.pose;
+
+  moveit::planning_interface::PlanningSceneInterface psi2;
+  psi2.applyCollisionObject(object);
+
+  std::vector<double> delta = {0, 0, 0};
+  std::vector<double> orients = {0, 0, 0, 1};
+
+  task.setProperty("group", arm_group_name);
+  task.setProperty("eef", hand_group_name);
+  task.setProperty("ik_frame", hand_frame);
+
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+    mtc::Stage* current_state_ptr = nullptr;  // Forward current_state on to grasp pose generator
+  #pragma GCC diagnostic pop
+
+  auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
+  current_state_ptr = stage_state_current.get();
+  task.add(std::move(stage_state_current));
+
+  auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_);
+  auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+  auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
+  cartesian_planner->setMaxVelocityScalingFactor(1.0);
+  cartesian_planner->setMaxAccelerationScalingFactor(1.0);
+  cartesian_planner->setStepSize(.01);
+
+  auto stage_open_hand =
+      std::make_unique<mtc::stages::MoveTo>("open hand", interpolation_planner);
+  stage_open_hand->setGroup(hand_group_name); 
+  stage_open_hand->setGoal("open");  
+  task.add(std::move(stage_open_hand));
+
+  auto stage_move_to_pick = std::make_unique<mtc::stages::Connect>(
+      "move to pick right",
+      mtc::stages::Connect::GroupPlannerVector{ { arm_group_name, sampling_planner } });
+  stage_move_to_pick->setTimeout(5.0);
+  stage_move_to_pick->properties().configureInitFrom(mtc::Stage::PARENT);
+  task.add(std::move(stage_move_to_pick));  
+
+  mtc::Stage* attach_object_stage =
+      nullptr;  // Forward attach_object_stage to place pose generator
+
+  //creates a SerialContainer which contains the stages relevant to the picking action
+  {
+    auto grasp_sample = std::make_unique<mtc::SerialContainer>("pick object");
+    task.properties().exposeTo(grasp_sample->properties(), { "eef", "group", "ik_frame" });
+
+    grasp_sample->properties().set("eef", task.properties().get<std::string>("eef"));// Provide standard names for substages
+    grasp_sample->properties().set("group", task.properties().get<std::string>("group"));
+    grasp_sample->properties().set("ik_frame", task.properties().get<std::string>("ik_frame"));
+  //create a stage to approach the object
+  if (enable_approach){
+    auto stage =
+        std::make_unique<mtc::stages::MoveRelative>("approach object", cartesian_planner);
+    stage->properties().set("marker_ns", "approach_object");
+    stage->properties().set("link", hand_frame);
+    stage->properties().configureInitFrom(mtc::Stage::PARENT, { "group" });
+    stage->setMinMaxDistance(0.01, 0.015);
+
+    // Set hand forward direction
+    geometry_msgs::msg::Vector3Stamped vec_right;
+    vec_right.header.frame_id = hand_frame;
+    vec_right.vector.z = 1.0;
+    stage->setDirection(vec_right);
+    grasp_sample->insert(std::move(stage));
+  }
+  {
+    // Sample grasp pose
+    auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose");
+    stage->properties().configureInitFrom(mtc::Stage::PARENT);
+    stage->properties().set("marker_ns", "grasp_pose");
+    stage->properties().set("max_rotation_angle", -0.261799);
+    stage->properties().set("min_rotation_angle", -0.78);
+    stage->setPreGraspPose("open");
+    stage->setObject(object_id);
+    stage->setTargetDelta(delta);
+    stage->setTargetOrient(orients);
+    stage->setAngleDelta(M_PI / 12);
+    stage->setRotationAxis(Eigen::Vector3d::UnitY());
+    stage->setMonitoredStage(current_state_ptr);  // Hook into current state
+    // Eigen::Isometry3d grasp_sample_frame_transform;
+    Eigen::Isometry3d grasp_sample_frame_transform = Eigen::Isometry3d::Identity();
+    // Eigen::Quaterniond q = Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX()) *
+    //                       Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) *
+    //                       Eigen::AngleAxisd(0, Eigen::Vector3d::UnitZ());
+    // grasp_sample_frame_transform.linear() = q.matrix();
+    grasp_sample_frame_transform.translation().z() = 0.1034;
+    // grasp_sample_frame_transform.translation().y() = 0.05;//Grasp one end of the object so that it is easier to hand it over to another arm
+
+    // Compute IK
+    auto wrapper =
+        std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
+    wrapper->setMaxIKSolutions(8);
+    wrapper->setMinSolutionDistance(1.0);
+    wrapper->setIKFrame(grasp_sample_frame_transform, hand_frame);
+    wrapper->properties().configureInitFrom(mtc::Stage::PARENT, { "eef", "group" });
+    wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, { "target_pose" });
+    grasp_sample->insert(std::move(wrapper));
+  }
+  
+  {
+    //allow collision between right hand and the object
+    auto stage =
+        std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (hand,object)");
+    stage->allowCollisions(object_id,
+                          task.getRobotModel()
+                              ->getJointModelGroup(hand_group_name)
+                              ->getLinkModelNamesWithCollisionGeometry(),
+                          true);
+    grasp_sample->insert(std::move(stage));
+  }
+
+  {
+    //close the right hand
+    auto stage = std::make_unique<mtc::stages::MoveTo>("close right hand", interpolation_planner);
+    stage->setGroup(hand_group_name);
+    stage->setGoal("close");
+    grasp_sample->insert(std::move(stage));
+  }
+  //attach the object to the hand
+  {
+  auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object right");
+  stage->attachObject(object_id, hand_frame);
+  attach_object_stage = stage.get();
+    
+    grasp_sample->insert(std::move(stage));
+  }
+
+    task.add(std::move(grasp_sample));
+  }
+  return task;
+}
+
+
 mtc::Task MTCTaskNode::createGoalPoseTask(std::string arm_group_name, 
                                           std::string hand_group_name, 
                                           std::string hand_frame,
-                                          geometry_msgs::msg::PoseStamped goal_pose, 
+                                          geometry_msgs::msg::PoseStamped goal_pose
                                           )
 {
   mtc::Task task;
@@ -1557,11 +1717,11 @@ mtc::Task MTCTaskNode::createGoalPoseTask(std::string arm_group_name,
     grasp_container->properties().set("group", hand_group_name);
     grasp_container->properties().set("ik_frame", hand_frame);
   {
-  // Fixed grasp pose
+    // Fixed grasp pose
     auto stage = std::make_unique<mtc::stages::FixedCartesianPoses>("fixed clipping pose");
     stage->addPose(goal_pose);
     stage->setMonitoredStage(current_state_ptr);
-
+  
     // IK frame at TCP
     Eigen::Isometry3d grasp_frame_transform = Eigen::Isometry3d::Identity();
     grasp_frame_transform.translation().z() = 0.1034;
