@@ -9,9 +9,10 @@ import socket
 import os
 import pickle
 import time
+import argparse
 
 class SolutionSubscriber(Node):
-    def __init__(self):
+    def __init__(self, ur_connected):
         super().__init__('solution_subscriber')
 
         # Create a subscriber and subscribe to the /solution topic
@@ -23,6 +24,7 @@ class SolutionSubscriber(Node):
         )
         self.solution_subscription  # Preventing garbage collection
         
+        self.ur_connected = ur_connected
             
     def solution_callback(self, msg):
         """Callback function when receiving /solution message"""
@@ -109,40 +111,40 @@ class SolutionSubscriber(Node):
                     self.get_logger().info(f"Smooth trajectory: {smooth_traj.q}")
                     # self.get_logger().info(f"Smooth trajectory shape: {smooth_traj.q.shape}")
                     # client_socket = socket.socket()  # instantiate
-                    
-                    # if "left" in traj_joint_names[0]:  # left one is the ur robot
-                        
-                    #     # smooth_file_path = os.path.join(os.path.dirname(__file__), 'saved_trajectories', f'smooth_left_traj_{solution_id}.txt')
-                    #     # os.makedirs(os.path.dirname(smooth_file_path), exist_ok=True)  # Ensure directory exists
+                    if self.ur_connected:
+                        if "left" in traj_joint_names[0]:  # left one is the ur robot
+                            
+                            # smooth_file_path = os.path.join(os.path.dirname(__file__), 'saved_trajectories', f'smooth_left_traj_{solution_id}.txt')
+                            # os.makedirs(os.path.dirname(smooth_file_path), exist_ok=True)  # Ensure directory exists
 
-                    #     # # Save the smoothed trajectory to the file
-                    #     # with open(smooth_file_path, 'w') as f:
-                    #     #     for row in smooth_traj.q:
-                    #     #         f.write(" ".join(map(str, row)) + "\n")
-                    #     # self.get_logger().info(f"Saved smooth trajectory to {smooth_file_path}")
-                        
-                        
-                    #     client_socket = socket.socket()  # instantiate
-                    #     server_host = '192.168.1.12' # ip of the computer which controls the ur
-                    #     server_port = 12345
-                    #     client_socket.connect((server_host, server_port))
-                    #     self.get_logger().info(f"Connect to robot")
-                    #     time.sleep(1)
-                    #     command = "write"
-                    #     client_socket.send(f"{command}".encode())
-                    #     time.sleep(1)
-                    #     smooth_file_path = 'smooth_real_world_traj_'+str(solution_id)+'.txt'
-                    #     smooth_file_name = str(solution_id)+'.txt'
-                    #     self.get_logger().info(f"file name {smooth_file_name}")
-                    #     client_socket.send(smooth_file_path.encode())  
-                    #     self.get_logger().info(f"Sent file name: {smooth_file_path}")
-                        
-                    #     # send the trajectory
-                    #     joint_traj_data = pickle.dumps(smooth_traj.q)
-                    #     client_socket.sendall(joint_traj_data)
-                    #     time.sleep(1)
-                    #     self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
-                    #     client_socket.close()
+                            # # Save the smoothed trajectory to the file
+                            # with open(smooth_file_path, 'w') as f:
+                            #     for row in smooth_traj.q:
+                            #         f.write(" ".join(map(str, row)) + "\n")
+                            # self.get_logger().info(f"Saved smooth trajectory to {smooth_file_path}")
+                            
+                            
+                            client_socket = socket.socket()  # instantiate
+                            server_host = '192.168.1.12' # ip of the computer which controls the ur
+                            server_port = 12345
+                            client_socket.connect((server_host, server_port))
+                            self.get_logger().info(f"Connect to robot")
+                            time.sleep(1)
+                            command = "write"
+                            client_socket.send(f"{command}".encode())
+                            time.sleep(1)
+                            smooth_file_path = 'smooth_real_world_traj_'+str(solution_id)+'.txt'
+                            smooth_file_name = str(solution_id)+'.txt'
+                            self.get_logger().info(f"file name {smooth_file_name}")
+                            client_socket.send(smooth_file_path.encode())  
+                            self.get_logger().info(f"Sent file name: {smooth_file_path}")
+                            
+                            # send the trajectory
+                            joint_traj_data = pickle.dumps(smooth_traj.q)
+                            client_socket.sendall(joint_traj_data)
+                            time.sleep(1)
+                            self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
+                            client_socket.close()
                     
                     if "right" in traj_joint_names[0]:  # right one is the panda robot
                         
@@ -227,9 +229,14 @@ class SolutionSubscriber(Node):
 
 
 def main(args=None):
+    parser = argparse.ArgumentParser(description='Rope Marker Publisher')
+    # add boolean flag to connect to UR robot or not
+    parser.add_argument('--ur_connected', action='store_true', help='Flag to connect to UR robot or not')
+    parsed_args = parser.parse_args()
+    
     rclpy.init(args=args)
 
-    solution_subscriber = SolutionSubscriber()
+    solution_subscriber = SolutionSubscriber(parsed_args.ur_connected)
 
     rclpy.spin(solution_subscriber)
 
