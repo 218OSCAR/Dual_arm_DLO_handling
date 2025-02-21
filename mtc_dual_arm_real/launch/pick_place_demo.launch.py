@@ -11,6 +11,12 @@ def generate_launch_description():
         description='Flag to skip hand-over operation or not'
     )
     
+    ur_connected_flag = DeclareLaunchArgument(
+        'ur_connected',
+        default_value='true',
+        description='Flag to connect to UR robot or not'
+    )
+    
     # moveit_config = MoveItConfigsBuilder("dual_arm_panda_ur").to_dict()
     moveit_config = (
         MoveItConfigsBuilder("dual_arm_panda_ur")
@@ -30,8 +36,9 @@ def generate_launch_description():
         output="screen",
         parameters=[
             moveit_config,
-            {"skip_handover": LaunchConfiguration('skip_handover')}
+            {"skip_handover": LaunchConfiguration('skip_handover')},
+            {"ur_connected": LaunchConfiguration('ur_connected')}
         ]
     )
 
-    return LaunchDescription([skip_handover_flag, pick_place_demo])
+    return LaunchDescription([skip_handover_flag, ur_connected_flag, pick_place_demo])

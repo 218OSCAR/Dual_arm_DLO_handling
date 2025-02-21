@@ -31,6 +31,7 @@
 #include <tf2/LinearMath/Vector3.h>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_visual_tools/moveit_visual_tools.h>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 //initiate the udp server
 using boost::asio::ip::udp;
@@ -55,6 +56,7 @@ std::condition_variable udp_condition_variable,
 // std::array<double, 3> grasp_point = {0.0, 0.0, 0.0}; // default value
 std::array<double, 6> grasp_point = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
 std::array<double, 3> grasp_tangent = {0.0, 1.0, 0.0}; // default value
+std::array<double, 3> grasp_normal = {0.0, 0.0, 1.0}; // default value
 std::array<double, 7> right_fix_goal_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value: x, y, z, w, rx, ry, rz
 std::array<double, 7> mount_fix_goal_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value: x, y, z, w, rx, ry, rz
 // std::array<double, 6> left_joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // default value
@@ -100,12 +102,16 @@ void udpReceiverRight(const std::string& host, int port) {
       auto tx = received_json["data"]["init_grasp_tangent"]["x"];
       auto ty = received_json["data"]["init_grasp_tangent"]["y"];
       auto tz = received_json["data"]["init_grasp_tangent"]["z"];
+      auto nx = received_json["data"]["init_grasp_normal"]["x"];
+      auto ny = received_json["data"]["init_grasp_normal"]["y"];
+      auto nz = received_json["data"]["init_grasp_normal"]["z"];
 
       // update the grasp point
       {
         std::lock_guard<std::mutex> lock(grasp_point_mutex);
         grasp_point = {x, y, z};
         grasp_tangent = {tx, ty, tz};
+        grasp_normal = {nx, ny, nz};
         // grasp_point = {x, y, z,rx,ry,rz};
       }
       udp_condition_variable.notify_one();
@@ -292,6 +298,8 @@ public:
 
   bool getSkipFlag();
 
+  bool getURConnectedFlag();
+
   // Robot group names
   std::string left_arm_group_name;
   std::string left_hand_group_name;
@@ -311,6 +319,7 @@ private:
   // Compose an MTC task from a series of stages.
   // mtc::Task createTask();
   mtc::Task createLeftArmTask();
+  mtc::Task createLeftArmJointTask();
   mtc::Task createLeftArmSyncTask();
   mtc::Task createGoalJointTask(bool attach_object, 
                               std::string arm_group_name, 
@@ -332,6 +341,8 @@ private:
                                       geometry_msgs::msg::PoseStamped object_pose,
                                       bool enable_approach);
   tf2::Matrix3x3 rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot);
+  tf2::Matrix3x3 rightGraspOrientationAlternative(const Eigen::Vector3d& cable_tangent, const Eigen::Vector3d& cable_normal);
+  void publishObjectTF(const std::string& object_name, const std::string& frame, const geometry_msgs::msg::Pose& object_pose);
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
 
@@ -344,9 +355,11 @@ private:
   // TF2 components
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
+  tf2_ros::StaticTransformBroadcaster static_tf_broadcaster_;
 
   // Flag
   bool skip_handover_;
+  bool ur_connected_;
 
   // Helper methods for internal setup
   void initializeGroups();
@@ -362,18 +375,23 @@ MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
     left_move_group_(node_, "left_ur_manipulator"),  // for dual arm or single arm
     visual_tools_(node_, "world", rviz_visual_tools::RVIZ_MARKER_TOPIC, left_move_group_.getRobotModel()),
     tf_buffer_(node_->get_clock()), // Initialize TF Buffer with node clock
-    tf_listener_(tf_buffer_)       // Initialize TF Listener with TF Buffer
+    tf_listener_(tf_buffer_),       // Initialize TF Listener with TF Buffer
+    static_tf_broadcaster_(node_)
 {
   // udp_thread_ = std::thread(&MTCTaskNode::udpReceive, this);  // Start the thread
   // RCLCPP_INFO(node_->get_logger(), "UDP receive thread started.");
 
+  bool ur_connected;
+  node_->get_parameter("ur_connected", ur_connected);
+  RCLCPP_INFO(node_->get_logger(), "Received parameter 'ur_connected': %s", ur_connected ? "true" : "false");
+
   bool skip_handover;
   node_->get_parameter("skip_handover", skip_handover);
-
   RCLCPP_INFO(node_->get_logger(), "Received parameter 'skip_handover': %s", skip_handover ? "true" : "false");
 
   // Use the parameter value as needed
   skip_handover_ = skip_handover;
+  ur_connected_ = ur_connected;
 
   visual_tools_.loadRemoteControl();
 
@@ -440,7 +458,7 @@ void MTCTaskNode::setupPlanningScene()
   geometry_msgs::msg::Pose pose;
   pose.position.x = 0.310;
   pose.position.y = -0.583;
-  pose.position.z = 1.105;
+  pose.position.z = 1.070; // 1.105;
   tf2::Quaternion q;
   q.setRPY(M_PI / 2, 0, M_PI / 2);  // Roll (X), Pitch (Y), Yaw (Z)
   pose.orientation = tf2::toMsg(q);
@@ -496,6 +514,11 @@ bool MTCTaskNode::getSkipFlag()
   return skip_handover_;
 }
 
+bool MTCTaskNode::getURConnectedFlag()
+{
+  return ur_connected_;
+}
+
 geometry_msgs::msg::PoseStamped MTCTaskNode::getPoseTransform(const geometry_msgs::msg::PoseStamped& pose, const std::string& target_frame)
 {   
     std::string frame_id = pose.header.frame_id;
@@ -517,10 +540,31 @@ geometry_msgs::msg::PoseStamped MTCTaskNode::getPoseTransform(const geometry_msg
     return pose_world;
 }
 
+void MTCTaskNode::publishObjectTF(const std::string& object_name, const std::string& frame, const geometry_msgs::msg::Pose& object_pose)
+{
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.stamp = rclcpp::Clock().now();  // Use the node's clock
+    transform.header.frame_id = frame;
+    transform.child_frame_id = object_name;
+
+    // Set translation
+    transform.transform.translation.x = object_pose.position.x;
+    transform.transform.translation.y = object_pose.position.y;
+    transform.transform.translation.z = object_pose.position.z;
+
+    // Set rotation
+    transform.transform.rotation = object_pose.orientation;
+
+    // Broadcast the transform
+    // tf_broadcaster_.sendTransform(transform);
+    static_tf_broadcaster_.sendTransform(transform);
+}
+
 void MTCTaskNode::doTask()
 {
   /* planning and execution for the left arm to hand-over position*/
-  mtc::Task left_task = createLeftArmTask();  
+  // mtc::Task left_task = createLeftArmTask();  
+  mtc::Task left_task = createLeftArmJointTask();
   try
   {
     left_task.init();
@@ -548,25 +592,27 @@ void MTCTaskNode::doTask()
   RCLCPP_INFO(LOGGER, "Left arm task executed successfully");
 
   /* synchronize the left arm to current position in the real world */
-  RCLCPP_INFO(LOGGER, "Synchronizing the left arm to real-world position...");
-  doSyncTask(true, left_arm_group_name, left_hand_group_name, left_hand_frame,
-              left_joint_positions_mutex, 
-              left_joint_positions, left_ur_joint_names,
-              left_joint_positions_condition_variable
-              );
+  if (ur_connected_) {
+    RCLCPP_INFO(LOGGER, "Synchronizing the left arm to real-world position...");
+    doSyncTask(true, left_arm_group_name, left_hand_group_name, left_hand_frame,
+                left_joint_positions_mutex, 
+                left_joint_positions, left_ur_joint_names,
+                left_joint_positions_condition_variable
+                );
+  }
 
   // get the orientation of the left end effector from planning scene
-  geometry_msgs::msg::PoseStamped left_current_pose = left_move_group_.getCurrentPose("left_robotiq_85_base_link");
-  auto left_ee_orientation = left_current_pose.pose.orientation; 
-  // get rotation matrix from quaternion
-  tf2::Quaternion left_ee_quat(left_ee_orientation.x, left_ee_orientation.y, left_ee_orientation.z, left_ee_orientation.w);
-  tf2::Matrix3x3 left_ee_rot(left_ee_quat);
-  tf2::Matrix3x3 rot_ee2object(
-    0, 1, 0,
-    0, 0, 1,
-    1, 0, 0
-  );
-  tf2::Matrix3x3 left_object_rot = rot_ee2object * left_ee_rot;
+  // geometry_msgs::msg::PoseStamped left_current_pose = left_move_group_.getCurrentPose("left_robotiq_85_base_link");
+  // auto left_ee_orientation = left_current_pose.pose.orientation; 
+  // // get rotation matrix from quaternion
+  // tf2::Quaternion left_ee_quat(left_ee_orientation.x, left_ee_orientation.y, left_ee_orientation.z, left_ee_orientation.w);
+  // tf2::Matrix3x3 left_ee_rot(left_ee_quat);
+  // tf2::Matrix3x3 rot_ee2object(
+  //   0, 1, 0,
+  //   0, 0, 1,
+  //   1, 0, 0
+  // );
+  // tf2::Matrix3x3 left_object_rot = rot_ee2object * left_ee_rot;
 
   /* planning and execution for the right arm to grasp the object */
   RCLCPP_INFO(LOGGER, "Waiting for grasp point via UDP...");
@@ -579,10 +625,16 @@ void MTCTaskNode::doTask()
   RCLCPP_INFO(LOGGER, "Grasp point received: [%f, %f, %f]", grasp_point[0], grasp_point[1], grasp_point[2]);
   RCLCPP_INFO(LOGGER, "Grasp tangent received: [%f, %f, %f]", grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
 
-  tf2::Vector3 cable_tangent(grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
+  // tf2::Vector3 cable_tangent(grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
+  // tf2::Vector3 cable_normal(grasp_normal[0], grasp_normal[1], grasp_normal[2]);
 
   // Option 1: Generate pose
-  tf2::Matrix3x3 right_object_rot = rightGraspOrientation(cable_tangent, left_object_rot);
+  // tf2::Matrix3x3 right_object_rot = rightGraspOrientation(cable_tangent, left_object_rot);
+
+  Eigen::Vector3d cable_tangent(grasp_tangent[0], grasp_tangent[1], grasp_tangent[2]);
+  Eigen::Vector3d cable_normal(grasp_normal[0], grasp_normal[1], grasp_normal[2]);
+  tf2::Matrix3x3 right_object_rot = rightGraspOrientationAlternative(cable_tangent, cable_normal);
+
   tf2::Quaternion right_object_quat;
   right_object_rot.getRotation(right_object_quat);
 
@@ -846,6 +898,44 @@ void MTCTaskNode::doMountingTask()
 
 }
 
+tf2::Matrix3x3 MTCTaskNode::rightGraspOrientationAlternative(const Eigen::Vector3d& cable_tangent, const Eigen::Vector3d& cable_normal)
+{
+  // 'cable_tangent': Eigen::Vector3d, the rope tangent at the grasp
+  // 'cable_normal': Eigen::Vector3d, the rope normal at the grasp
+  // We want new orientation s.t. x-axis = cable_tangent, y-axis = cable_normal, z-axis = x-axis x y-axis.
+
+  Eigen::Vector3d x_new = cable_tangent.normalized(); // new X = rope tangent
+  Eigen::Vector3d y_new = cable_normal.normalized(); // new Y = rope normal
+  Eigen::Vector3d z_new = x_new.cross(y_new).normalized(); // new Z = X x Y
+
+  RCLCPP_INFO(LOGGER, "New orientation: x=[%f, %f, %f], y=[%f, %f, %f], z=[%f, %f, %f]", x_new.x(), x_new.y(), x_new.z(), y_new.x(), y_new.y(), y_new.z(), z_new.x(), z_new.y(), z_new.z());
+
+  // correct direction
+  if (z_new.z() > 0)
+  {
+    z_new = -z_new; // Invert z_new to point towards the negative z-axis
+    RCLCPP_INFO(LOGGER, "Corrected z-axis direction to [%f, %f, %f]", z_new.x(), z_new.y(), z_new.z());
+  }
+  if (x_new.x() < 0)
+  {
+    x_new = -x_new;
+    RCLCPP_INFO(LOGGER, "Corrected x-axis direction to [%f, %f, %f]", x_new.x(), x_new.y(), x_new.z());
+  }
+  if (y_new.y() > 0)
+  {
+    y_new = -y_new;
+    RCLCPP_INFO(LOGGER, "Corrected y-axis direction to [%f, %f, %f]", y_new.x(), y_new.y(), y_new.z());
+  }
+
+  tf2::Matrix3x3 right_object_new(
+      x_new.x(), y_new.x(), z_new.x(),
+      x_new.y(), y_new.y(), z_new.y(),
+      x_new.z(), y_new.z(), z_new.z()
+  );
+
+  return right_object_new;
+}
+
 tf2::Matrix3x3 MTCTaskNode::rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot)
 {
 // 'cable_tangent': tf2::Vector3, the rope tangent at the grasp
@@ -1024,6 +1114,9 @@ mtc::Task MTCTaskNode::createLeftArmTask()
     target_pose_msg.pose.position.x = 0.0;
     target_pose_msg.pose.position.y = 0.6;
 
+    //0.080, -0.615, 0.833
+    //-0.01 0.035 0.555
+
     // target_pose_msg.pose.position.z = 1.104;
     // target_pose_msg.pose.position.x = 0.624;
     // target_pose_msg.pose.position.y = -0.119;
@@ -1113,6 +1206,152 @@ mtc::Task MTCTaskNode::createLeftArmTask()
     task.add(std::move(place_left));
     RCLCPP_WARN_STREAM(LOGGER, "task created");
   }
+
+  return task;
+}
+
+mtc::Task MTCTaskNode::createLeftArmJointTask()
+{
+  mtc::Task task;
+  task.stages()->setName("left arm task");
+  task.loadRobotModel(node_);
+
+  std::vector<double> delta = {0, 0, 0};
+  std::vector<double> orients = {0, 0, 0, 1};
+
+
+  task.setProperty("left_group", left_arm_group_name);
+  task.setProperty("left_eef", left_hand_group_name);
+  task.setProperty("left_ik_frame", left_hand_frame);
+
+
+  // Disable warnings for this line, as it's a variable that's set but not used in this example
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+    mtc::Stage* current_state_ptr = nullptr;  // Forward current_state on to grasp pose generator
+  #pragma GCC diagnostic pop
+
+
+  auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
+  current_state_ptr = stage_state_current.get();
+  task.add(std::move(stage_state_current));
+  
+  //3 options of the solvers
+  auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_);
+  auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+
+  auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
+  cartesian_planner->setMaxVelocityScalingFactor(1.0);
+  cartesian_planner->setMaxAccelerationScalingFactor(1.0);
+  cartesian_planner->setStepSize(.01);
+
+  //open the left hand
+  auto stage_open_left_hand =
+      std::make_unique<mtc::stages::MoveTo>("open left hand", interpolation_planner);
+  stage_open_left_hand->setGroup(left_hand_group_name);  
+  stage_open_left_hand->setGoal("gripper_open");  
+  task.add(std::move(stage_open_left_hand)); 
+
+  // //move to pick the objekt
+  // auto stage_move_to_pick_left = std::make_unique<mtc::stages::Connect>(
+  //     "move to pick left",
+  //     mtc::stages::Connect::GroupPlannerVector{ { left_arm_group_name, sampling_planner } });
+  // stage_move_to_pick_left->setTimeout(5.0);
+  // stage_move_to_pick_left->properties().configureInitFrom(mtc::Stage::PARENT);
+  // task.add(std::move(stage_move_to_pick_left));
+
+  mtc::Stage* attach_object_stage_left =
+      nullptr;  // Forward attach_object_stage to place pose generator
+
+  //creates a SerialContainer which contains the stages relevant to the picking action
+  {
+    auto grasp_left = std::make_unique<mtc::SerialContainer>("pick object left");
+    task.properties().exposeTo(grasp_left->properties(), { "left_eef", "left_group", "left_ik_frame" });
+    // grasp->properties().configureInitFrom(mtc::Stage::PARENT,
+    //                                       { "left_eef", "left_group", "left_ik_frame" });
+
+    grasp_left->properties().set("eef", task.properties().get<std::string>("left_eef"));// Provide standard names for substages
+    grasp_left->properties().set("group", task.properties().get<std::string>("left_group"));
+    grasp_left->properties().set("ik_frame", task.properties().get<std::string>("left_ik_frame"));
+
+  {
+    //allow collision between left gripper and the object
+    auto stage =
+        std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (left_gripper,object)");
+    stage->allowCollisions("object",
+                          task.getRobotModel()
+                              ->getJointModelGroup(left_hand_group_name)
+                              ->getLinkModelNamesWithCollisionGeometry(),
+                          true);
+    grasp_left->insert(std::move(stage));
+  }
+  
+  {
+    //close the left hand
+    auto stage = std::make_unique<mtc::stages::MoveTo>("close left hand", interpolation_planner);
+    stage->setGroup(left_hand_group_name);
+    stage->setGoal("gripper_close");
+    grasp_left->insert(std::move(stage));
+  }
+  //attach the object to the hand
+  {
+  auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object left");
+  stage->attachObject("object", left_hand_frame);
+  attach_object_stage_left = stage.get();
+    
+    grasp_left->insert(std::move(stage));
+  }
+  
+    task.add(std::move(grasp_left));
+  }
+
+  // {
+  //   auto stage_move_to_place_left = std::make_unique<mtc::stages::Connect>(
+  //       "move to place",
+  //       mtc::stages::Connect::GroupPlannerVector{ { left_arm_group_name, sampling_planner },
+  //                                                  });
+
+  //   stage_move_to_place_left->properties().configureInitFrom(mtc::Stage::PARENT);
+  //   task.add(std::move(stage_move_to_place_left));
+  // }
+  // move to synchronization joint position
+  { 
+    std::vector<double> goal_joint_position = {5.2232561111450195, -1.2322471004775544, -1.4335118532180786, -1.4516330075315018, 1.396162986755371, 0.5803499221801758};
+    // set Goal from joint positions
+    std::map<std::string, double> joint_goal;
+
+    joint_goal = {{"left_shoulder_pan_joint", goal_joint_position[0]},
+                  {"left_shoulder_lift_joint", goal_joint_position[1]},
+                  {"left_elbow_joint", goal_joint_position[2]},
+                  {"left_wrist_1_joint", goal_joint_position[3]},
+                  {"left_wrist_2_joint", goal_joint_position[4]},
+                  {"left_wrist_3_joint", goal_joint_position[5]}};
+
+    auto stage_move_to_joint = std::make_unique<mtc::stages::MoveTo>("move to synchronization position", sampling_planner);
+    stage_move_to_joint->setGroup(left_arm_group_name);
+    stage_move_to_joint->setGoal(joint_goal);
+    task.add(std::move(stage_move_to_joint));
+  }
+  {
+    auto stage =
+        std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (left_gripper,object)");
+    stage->allowCollisions("object",
+                          task.getRobotModel()
+                              ->getJointModelGroup(left_hand_group_name)
+                              ->getLinkModelNamesWithCollisionGeometry(),
+                          false);
+    // place_left->insert(std::move(stage));
+    task.add(std::move(stage));
+  }
+  {
+    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object left");
+    stage->detachObject("object", left_hand_frame);
+    // place_left->insert(std::move(stage));
+    task.add(std::move(stage));
+  } 
+    // task.add(std::move(place_left));
+    // RCLCPP_WARN_STREAM(LOGGER, "task created");
+
 
   return task;
 }
@@ -1386,8 +1625,10 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
   // pose.orientation.w = 1.0;
   object2.pose = pose2;
 
-  moveit::planning_interface::PlanningSceneInterface psi2;
-  psi2.applyCollisionObject(object2);
+  // moveit::planning_interface::PlanningSceneInterface psi2;
+  // psi2.applyCollisionObject(object2);
+
+  publishObjectTF("object2", "right_panda_link0", pose2);
 
   std::vector<double> delta = {0, 0, 0};
   std::vector<double> orients = {0, 0, 0, 1};
@@ -1401,6 +1642,8 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     mtc::Stage* current_state_ptr = nullptr;  // Forward current_state on to grasp pose generator
   #pragma GCC diagnostic pop
 
+  mtc::Stage* pre_move_stage_ptr = nullptr;
+
   auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
   current_state_ptr = stage_state_current.get();
   task.add(std::move(stage_state_current));
@@ -1412,21 +1655,28 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
   cartesian_planner->setMaxAccelerationScalingFactor(1.0);
   cartesian_planner->setStepSize(.01);
 
-  auto stage_open_right_hand =
+  visual_tools_.prompt("Press 'next' to open the right hand");
+  {
+     auto stage_open_right_hand =
       std::make_unique<mtc::stages::MoveTo>("open right hand", interpolation_planner);
-  stage_open_right_hand->setGroup(right_hand_group_name); 
-  stage_open_right_hand->setGoal("open");  
-  task.add(std::move(stage_open_right_hand));
+    stage_open_right_hand->setGroup(right_hand_group_name); 
+    stage_open_right_hand->setGoal("open");  
 
-  auto stage_move_to_pick_right = std::make_unique<mtc::stages::Connect>(
-      "move to pick right",
-      mtc::stages::Connect::GroupPlannerVector{ { right_arm_group_name, sampling_planner } });
-  stage_move_to_pick_right->setTimeout(5.0);
-  stage_move_to_pick_right->properties().configureInitFrom(mtc::Stage::PARENT);
-  task.add(std::move(stage_move_to_pick_right));  
+    pre_move_stage_ptr = stage_open_right_hand.get();
 
-  mtc::Stage* attach_object_stage_right =
-      nullptr;  // Forward attach_object_stage to place pose generator
+    task.add(std::move(stage_open_right_hand));
+  }
+  {
+    auto stage_move_to_pick_right = std::make_unique<mtc::stages::Connect>(
+    "move to pick right",
+    mtc::stages::Connect::GroupPlannerVector{ { right_arm_group_name, sampling_planner } });
+    stage_move_to_pick_right->setTimeout(5.0);
+    stage_move_to_pick_right->properties().configureInitFrom(mtc::Stage::PARENT);
+    task.add(std::move(stage_move_to_pick_right));  
+  }
+
+  // mtc::Stage* attach_object_stage_right =
+  //     nullptr;  // Forward attach_object_stage to place pose generator
 
   //creates a SerialContainer which contains the stages relevant to the picking action
   {
@@ -1452,30 +1702,57 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     stage->setDirection(vec_right);
     grasp_right->insert(std::move(stage));
   }
-  {
-    // Sample grasp pose
-    auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose right");
-    stage->properties().configureInitFrom(mtc::Stage::PARENT);
-    stage->properties().set("marker_ns", "grasp_pose_right");
-    stage->properties().set("max_rotation_angle", 1.5*M_PI);
-    stage->properties().set("min_rotation_angle", M_PI);
-    stage->setPreGraspPose("open");
-    stage->setObject("object2");
-    stage->setTargetDelta(delta);
-    stage->setTargetOrient(orients);
-    stage->setAngleDelta(M_PI / 12);
-    stage->setRotationAxis(Eigen::Vector3d::UnitZ());
-    stage->setMonitoredStage(current_state_ptr);  // Hook into current state
-    Eigen::Isometry3d grasp_right_frame_transform;
-    // Eigen::Isometry3d grasp_right_frame_transform = Eigen::Isometry3d::Identity();
-    Eigen::Quaterniond q = Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX()) *
-                          Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) *
-                          Eigen::AngleAxisd(0, Eigen::Vector3d::UnitZ());
-    grasp_right_frame_transform.linear() = q.matrix();
-    grasp_right_frame_transform.translation().z() = 0.1034;
-    // grasp_right_frame_transform.translation().y() = 0.05;//Grasp one end of the object so that it is easier to hand it over to another arm
+  // {
+  //   // Sample grasp pose
+  //   auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose right");
+  //   stage->properties().configureInitFrom(mtc::Stage::PARENT);
+  //   stage->properties().set("marker_ns", "grasp_pose_right");
+  //   stage->properties().set("max_rotation_angle", 1.5*M_PI);
+  //   stage->properties().set("min_rotation_angle", M_PI);
+  //   stage->setPreGraspPose("open");
+  //   stage->setObject("object2");
+  //   stage->setTargetDelta(delta);
+  //   stage->setTargetOrient(orients);
+  //   stage->setAngleDelta(M_PI / 12);
+  //   stage->setRotationAxis(Eigen::Vector3d::UnitZ());
+  //   stage->setMonitoredStage(current_state_ptr);  // Hook into current state
+  //   Eigen::Isometry3d grasp_right_frame_transform;
+  //   // Eigen::Isometry3d grasp_right_frame_transform = Eigen::Isometry3d::Identity();
+  //   Eigen::Quaterniond q = Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX()) *
+  //                         Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) *
+  //                         Eigen::AngleAxisd(0, Eigen::Vector3d::UnitZ());
+  //   grasp_right_frame_transform.linear() = q.matrix();
+  //   grasp_right_frame_transform.translation().z() = 0.1034;
+  //   // grasp_right_frame_transform.translation().y() = 0.05;//Grasp one end of the object so that it is easier to hand it over to another arm
 
-    // Compute IK
+  //   // Compute IK
+  //   auto wrapper =
+  //       std::make_unique<mtc::stages::ComputeIK>("grasp pose right IK", std::move(stage));
+  //   wrapper->setMaxIKSolutions(8);
+  //   wrapper->setMinSolutionDistance(1.0);
+  //   wrapper->setIKFrame(grasp_right_frame_transform, right_hand_frame);
+  //   wrapper->properties().configureInitFrom(mtc::Stage::PARENT, { "eef", "group" });
+  //   wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, { "target_pose" });
+  //   grasp_right->insert(std::move(wrapper));
+  // }
+
+  {
+    // Fixed grasp pose
+    auto stage = std::make_unique<mtc::stages::FixedCartesianPoses>("fixed clipping pose");
+    geometry_msgs::msg::PoseStamped goal_pose;
+    goal_pose.header.frame_id = "right_panda_link0";
+    goal_pose.pose = pose2;
+
+    geometry_msgs::msg::PoseStamped goal_pose_in_world_frame = getPoseTransform(goal_pose, "world");
+
+    stage->addPose(goal_pose_in_world_frame);
+    stage->setMonitoredStage(pre_move_stage_ptr);
+  
+    // IK frame at TCP
+    Eigen::Isometry3d grasp_right_frame_transform = Eigen::Isometry3d::Identity();
+    grasp_right_frame_transform.translation().z() = 0.1034;
+
+     // Compute IK
     auto wrapper =
         std::make_unique<mtc::stages::ComputeIK>("grasp pose right IK", std::move(stage));
     wrapper->setMaxIKSolutions(8);
@@ -1484,19 +1761,19 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     wrapper->properties().configureInitFrom(mtc::Stage::PARENT, { "eef", "group" });
     wrapper->properties().configureInitFrom(mtc::Stage::INTERFACE, { "target_pose" });
     grasp_right->insert(std::move(wrapper));
+
   }
-  
-  {
-    //allow collision between right hand and the object
-    auto stage =
-        std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (right_hand,object2)");
-    stage->allowCollisions("object2",
-                          task.getRobotModel()
-                              ->getJointModelGroup(right_hand_group_name)
-                              ->getLinkModelNamesWithCollisionGeometry(),
-                          true);
-    grasp_right->insert(std::move(stage));
-  }
+  // {
+  //   //allow collision between right hand and the object
+  //   auto stage =
+  //       std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (right_hand,object2)");
+  //   stage->allowCollisions("object2",
+  //                         task.getRobotModel()
+  //                             ->getJointModelGroup(right_hand_group_name)
+  //                             ->getLinkModelNamesWithCollisionGeometry(),
+  //                         true);
+  //   grasp_right->insert(std::move(stage));
+  // }
 
   {
     //close the right hand
@@ -1506,13 +1783,13 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     grasp_right->insert(std::move(stage));
   }
   //attach the object to the hand
-  {
-  auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object2 right");
-  stage->attachObject("object2", right_hand_frame);
-  attach_object_stage_right = stage.get();
+  // {
+  // auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object2 right");
+  // stage->attachObject("object2", right_hand_frame);
+  // attach_object_stage_right = stage.get();
     
-    grasp_right->insert(std::move(stage));
-  }
+  //   grasp_right->insert(std::move(stage));
+  // }
 
     task.add(std::move(grasp_right));
   }
