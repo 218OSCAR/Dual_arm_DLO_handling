@@ -1252,14 +1252,6 @@ mtc::Task MTCTaskNode::createLeftArmJointTask()
   stage_open_left_hand->setGoal("gripper_open");  
   task.add(std::move(stage_open_left_hand)); 
 
-  // //move to pick the objekt
-  // auto stage_move_to_pick_left = std::make_unique<mtc::stages::Connect>(
-  //     "move to pick left",
-  //     mtc::stages::Connect::GroupPlannerVector{ { left_arm_group_name, sampling_planner } });
-  // stage_move_to_pick_left->setTimeout(5.0);
-  // stage_move_to_pick_left->properties().configureInitFrom(mtc::Stage::PARENT);
-  // task.add(std::move(stage_move_to_pick_left));
-
   mtc::Stage* attach_object_stage_left =
       nullptr;  // Forward attach_object_stage to place pose generator
 
@@ -1293,28 +1285,9 @@ mtc::Task MTCTaskNode::createLeftArmJointTask()
     stage->setGoal("gripper_close");
     grasp_left->insert(std::move(stage));
   }
-  //attach the object to the hand
-  {
-  auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object left");
-  stage->attachObject("object", left_hand_frame);
-  attach_object_stage_left = stage.get();
-    
-    grasp_left->insert(std::move(stage));
-  }
-  
     task.add(std::move(grasp_left));
   }
 
-  // {
-  //   auto stage_move_to_place_left = std::make_unique<mtc::stages::Connect>(
-  //       "move to place",
-  //       mtc::stages::Connect::GroupPlannerVector{ { left_arm_group_name, sampling_planner },
-  //                                                  });
-
-  //   stage_move_to_place_left->properties().configureInitFrom(mtc::Stage::PARENT);
-  //   task.add(std::move(stage_move_to_place_left));
-  // }
-  // move to synchronization joint position
   { 
     std::vector<double> goal_joint_position = {5.2232561111450195, -1.2322471004775544, -1.4335118532180786, -1.4516330075315018, 1.396162986755371, 0.5803499221801758};
     // set Goal from joint positions
@@ -1332,26 +1305,6 @@ mtc::Task MTCTaskNode::createLeftArmJointTask()
     stage_move_to_joint->setGoal(joint_goal);
     task.add(std::move(stage_move_to_joint));
   }
-  {
-    auto stage =
-        std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (left_gripper,object)");
-    stage->allowCollisions("object",
-                          task.getRobotModel()
-                              ->getJointModelGroup(left_hand_group_name)
-                              ->getLinkModelNamesWithCollisionGeometry(),
-                          false);
-    // place_left->insert(std::move(stage));
-    task.add(std::move(stage));
-  }
-  {
-    auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object left");
-    stage->detachObject("object", left_hand_frame);
-    // place_left->insert(std::move(stage));
-    task.add(std::move(stage));
-  } 
-    // task.add(std::move(place_left));
-    // RCLCPP_WARN_STREAM(LOGGER, "task created");
-
 
   return task;
 }
@@ -1687,21 +1640,21 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     grasp_right->properties().set("group", task.properties().get<std::string>("right_group"));
     grasp_right->properties().set("ik_frame", task.properties().get<std::string>("right_ik_frame"));
   //create a stage to approach the object
-  {
-    auto stage =
-        std::make_unique<mtc::stages::MoveRelative>("approach object right", cartesian_planner);
-    stage->properties().set("marker_ns", "approach_object_right");
-    stage->properties().set("link", right_hand_frame);
-    stage->properties().configureInitFrom(mtc::Stage::PARENT, { "group" });
-    stage->setMinMaxDistance(0.01, 0.015);
+  // {
+  //   auto stage =
+  //       std::make_unique<mtc::stages::MoveRelative>("approach object right", cartesian_planner);
+  //   stage->properties().set("marker_ns", "approach_object_right");
+  //   stage->properties().set("link", right_hand_frame);
+  //   stage->properties().configureInitFrom(mtc::Stage::PARENT, { "group" });
+  //   stage->setMinMaxDistance(0.01, 0.015);
 
-    // Set hand forward direction
-    geometry_msgs::msg::Vector3Stamped vec_right;
-    vec_right.header.frame_id = right_hand_frame;
-    vec_right.vector.z = 1.0;
-    stage->setDirection(vec_right);
-    grasp_right->insert(std::move(stage));
-  }
+  //   // Set hand forward direction
+  //   geometry_msgs::msg::Vector3Stamped vec_right;
+  //   vec_right.header.frame_id = right_hand_frame;
+  //   vec_right.vector.z = 1.0;
+  //   stage->setDirection(vec_right);
+  //   grasp_right->insert(std::move(stage));
+  // }
   // {
   //   // Sample grasp pose
   //   auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose right");
