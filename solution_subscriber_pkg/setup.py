@@ -21,7 +21,8 @@ setup(
     entry_points={
         'console_scripts': [
             'solution_subscriber = solution_subscriber_pkg.solution_subscriber:main',
-            'marker_publisher = solution_subscriber_pkg.marker_publisher:main'
+            'marker_publisher = solution_subscriber_pkg.marker_publisher:main',
+            'replan_bridge = solution_subscriber_pkg.replan_bridge:main'
         ],
     },
 )

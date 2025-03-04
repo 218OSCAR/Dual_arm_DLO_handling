@@ -10,6 +10,7 @@ import os
 import pickle
 import time
 import argparse
+import json
 
 class SolutionSubscriber(Node):
     def __init__(self, ur_connected):
@@ -25,6 +26,20 @@ class SolutionSubscriber(Node):
         self.solution_subscription  # Preventing garbage collection
         
         self.ur_connected = ur_connected
+    
+    def send_ack(self, ack_port=12345):
+        """Send an ACK message to 192.168.1.12 via UDP."""
+        ack_ip = '192.168.1.12'
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Instantiate socket
+            data_ack = {'plan_done': True}          
+            ack_message = json.dumps(data_ack)
+            client_socket.sendto(ack_message.encode('utf-8'), (ack_ip, ack_port))
+            self.get_logger().info("Sent ACK message.")
+            time.sleep(1)
+            client_socket.close()
+        except Exception as e:
+            self.get_logger().error(f"Failed to send ACK: {e} at {ack_ip}:{ack_port}")
             
     def solution_callback(self, msg):
         """Callback function when receiving /solution message"""
@@ -145,6 +160,8 @@ class SolutionSubscriber(Node):
                             time.sleep(1)
                             self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
                             client_socket.close()
+                            
+                            self.send_ack()
                     
                     if "right" in traj_joint_names[0]:  # right one is the panda robot
                         
@@ -175,6 +192,9 @@ class SolutionSubscriber(Node):
                         time.sleep(1)
                         self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
                         client_socket.close()
+                        
+                        self.send_ack(ack_port=5085)
+                        
                     elif "mount" in traj_joint_names[0]:  # right one is the panda robot
                         
                         client_socket = socket.socket()  # instantiate
@@ -204,6 +224,9 @@ class SolutionSubscriber(Node):
                         time.sleep(1)
                         self.get_logger().info(f"send smooth trajectory to mios at {server_host}")
                         client_socket.close()
+                        
+                        self.send_ack(ack_port=5086)                       
+                        
                     else:
                         self.get_logger().warn(f"Unknown robot for trajectory: {traj_joint_names[0]}")
                         continue
