@@ -375,6 +375,8 @@ private:
   std::condition_variable cv_;
   bool service_called_{false};
   bool replan_flag_{false};
+  std::promise<bool> replan_decision_promise_;
+  std::future<bool> replan_decision_future_;
 
   // Helper methods for internal setup
   void initializeGroups();
@@ -395,6 +397,8 @@ MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
 {
   // udp_thread_ = std::thread(&MTCTaskNode::udpReceive, this);  // Start the thread
   // RCLCPP_INFO(node_->get_logger(), "UDP receive thread started.");
+
+  replan_decision_future_ = replan_decision_promise_.get_future();
 
   bool ur_connected;
   node_->get_parameter("ur_connected", ur_connected);
@@ -470,16 +474,34 @@ void MTCTaskNode::replanCallback(
   const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
   std::shared_ptr<std_srvs::srv::SetBool::Response> response)
 {
-  std::unique_lock<std::mutex> lock(mutex_);
-  service_called_ = true;         // Mark that a service call was received
-  replan_flag_ = request->data;     // true: replan, false: continue
-  cv_.notify_one();               // Wake up the waiting loop
+  { // Begin critical section
+    std::unique_lock<std::mutex> lock(mutex_);
+    service_called_ = true;         // Mark that a service call was received
+    replan_flag_ = request->data;     // true: replan, false: continue
 
-  response->success = true;
-  response->message = "Replan service call received: " + std::to_string(replan_flag_);
+    cv_.notify_one();               // Wake up the waiting loop
+    RCLCPP_INFO(LOGGER, "Replan service call received: %s", service_called_ ? "true" : "false");
+    RCLCPP_INFO(LOGGER, "Replan: %s", replan_flag_ ? "true" : "false");
+  } // End critical section, mutex is released now
 
-  RCLCPP_INFO(LOGGER, "Replan service call received: %s", service_called_ ? "true" : "false");
-  RCLCPP_INFO(LOGGER, "Replan: %s", replan_flag_ ? "true" : "false");
+  // Now block waiting for the mounting loop's decision.
+  bool decision = replan_decision_future_.get();  // This will now block without holding the mutex.
+
+  // Use the decision to fill the response.
+  response->success = decision;
+  response->message = decision ?
+      "Plan succeeded. Exiting planning loop." :
+      "Replan requested. Continuing loop for replanning.";
+
+  RCLCPP_INFO(LOGGER, "Sending service response: %s", response->message.c_str());
+
+  // Prepare a new promise/future pair for the next iteration.
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    replan_decision_promise_ = std::promise<bool>();
+    replan_decision_future_ = replan_decision_promise_.get_future();
+  }
+
 }
 
 void MTCTaskNode::setupPlanningScene()
@@ -946,32 +968,39 @@ void MTCTaskNode::doMountingTask()
     // visual_tools_.prompt("[Human Confirmation] Press 'next' to confirm the plan, or 'replan' to re-run the planning");
 
     // Display prompt in RViz to inform the user
-    visual_tools_.prompt("[User Confirmation] Call the replan_service: send {data: true} to replan or {data: false} to continue.");
+    RCLCPP_WARN(LOGGER, "[User Confirmation] Call the replan_service: send {data: true} to replan or {data: false} to continue.");
 
-    // // Wait for the service call to trigger input
-    // {
-    //   std::unique_lock<std::mutex> lock(mutex_);
-    //   // Wait until the service callback sets service_called_ to true.
-    //   cv_.wait(lock, []() { return service_called_; });
-    //   // Reset flag for next iteration (if needed)
-    //   // service_called_ = false;
-    // }
+    // Wait for the service call to trigger input
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      // Wait until the service callback sets service_called_ to true.
+      cv_.wait(lock, [this]() { return service_called_; });
+      // Reset flag for next iteration (if needed)
+      // service_called_ = false;
+    }
 
-    // // Check the flag set by the service callback.
-    // if (replan_flag_)
-    // {
-    //   RCLCPP_INFO(LOGGER, "Replan requested. Re-running planning...");
+    // Check the flag set by the service callback.
+    if (replan_flag_)
+    {
+      RCLCPP_INFO(LOGGER, "Replan requested. Re-running planning...");
 
-    //   visual_tools_.prompt("[Replanning] Press 'next' to re-run the planning");
-    //   // Insert your replanning logic here.
-    //   // For example, reinitialize your planning task, replan, etc.
-    //   continue;  // Continue the loop to prompt again after replanning.
-    // }
-    // else
-    // {
-    //   RCLCPP_INFO(LOGGER, "User chose to continue. Exiting planning loop.");
-    //   plan_success = true;  // Exit loop and continue execution.
-    // }
+      replan_decision_promise_.set_value(false);
+      // Reset flag for next iteration.
+      service_called_ = false;
+
+      // Insert your replanning logic here.
+      // For example, reinitialize your planning task, replan, etc.
+      continue;  // Continue the loop to prompt again after replanning.
+    }
+    else
+    {
+      RCLCPP_INFO(LOGGER, "User chose to continue. Exiting planning loop.");
+      plan_success = true;  // Exit loop and continue execution.
+
+      replan_decision_promise_.set_value(true);
+      service_called_ = false;
+
+    }
   }
 
   auto mount_result = mount_task.execute(*mount_task.solutions().front());
@@ -2125,7 +2154,12 @@ int main(int argc, char** argv)
     RCLCPP_WARN_STREAM(LOGGER, "Skip the handover task");
   }
 
-  mtc_task_node->doMountingTask();
+  // Run the mounting task in a separate thread so that it doesn't block the main thread.
+  std::thread mounting_task_thread([&mtc_task_node]() {
+    mtc_task_node->doMountingTask();
+  });
+
+  mounting_task_thread.join();
 
   // // stop the UDP receiver thread
   udp_running = false;
