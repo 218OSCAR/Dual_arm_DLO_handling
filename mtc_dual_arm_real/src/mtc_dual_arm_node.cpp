@@ -32,6 +32,7 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_visual_tools/moveit_visual_tools.h>
 #include <tf2_ros/static_transform_broadcaster.h>
+#include <std_srvs/srv/set_bool.hpp>
 
 //initiate the udp server
 using boost::asio::ip::udp;
@@ -272,6 +273,8 @@ void udpReceiverSync(const std::string& host, int port,
 }
 
 
+
+
 class MTCTaskNode
 {
 public:
@@ -334,7 +337,7 @@ private:
                               std::string hand_frame,
                               geometry_msgs::msg::PoseStamped goal_pose);
   mtc::Task createRightArmTask(tf2::Quaternion q2); 
-  mtc::Task createSampleGarspPoseTask(std::string arm_group_name, 
+  mtc::Task createSampleGraspPoseTask(std::string arm_group_name, 
                                       std::string hand_group_name, 
                                       std::string hand_frame,
                                       std::string object_id,
@@ -343,6 +346,11 @@ private:
   tf2::Matrix3x3 rightGraspOrientation(tf2::Vector3 cable_tangent, tf2::Matrix3x3 left_object_rot);
   tf2::Matrix3x3 rightGraspOrientationAlternative(const Eigen::Vector3d& cable_tangent, const Eigen::Vector3d& cable_normal);
   void publishObjectTF(const std::string& object_name, const std::string& frame, const geometry_msgs::msg::Pose& object_pose);
+
+  void replanCallback(
+  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+  std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+  
   mtc::Task task_;
   // // rclcpp::Node::SharedPtr node_;
 
@@ -360,6 +368,13 @@ private:
   // Flag
   bool skip_handover_;
   bool ur_connected_;
+
+  // Member variables for the service and synchronization
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr replan_service_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool service_called_{false};
+  bool replan_flag_{false};
 
   // Helper methods for internal setup
   void initializeGroups();
@@ -388,6 +403,12 @@ MTCTaskNode::MTCTaskNode(const rclcpp::NodeOptions& options)
   bool skip_handover;
   node_->get_parameter("skip_handover", skip_handover);
   RCLCPP_INFO(node_->get_logger(), "Received parameter 'skip_handover': %s", skip_handover ? "true" : "false");
+
+  // Create the replan service
+  replan_service_ = node_->create_service<std_srvs::srv::SetBool>(
+    "replan_service",
+    std::bind(&MTCTaskNode::replanCallback, this,
+              std::placeholders::_1, std::placeholders::_2));
 
   // Use the parameter value as needed
   skip_handover_ = skip_handover;
@@ -445,6 +466,21 @@ void MTCTaskNode::initializeGroups()
 //   psi.applyCollisionObject(object2);
 // }
 
+void MTCTaskNode::replanCallback(
+  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+  std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+{
+  std::unique_lock<std::mutex> lock(mutex_);
+  service_called_ = true;         // Mark that a service call was received
+  replan_flag_ = request->data;     // true: replan, false: continue
+  cv_.notify_one();               // Wake up the waiting loop
+
+  response->success = true;
+  response->message = "Replan service call received: " + std::to_string(replan_flag_);
+
+  RCLCPP_INFO(LOGGER, "Replan service call received: %s", service_called_ ? "true" : "false");
+  RCLCPP_INFO(LOGGER, "Replan: %s", replan_flag_ ? "true" : "false");
+}
 
 void MTCTaskNode::setupPlanningScene()
 {
@@ -845,47 +881,98 @@ void MTCTaskNode::doMountingTask()
   move_to_goal_pose_task_success = true;
 
   /*********** planning and execution for mount arm to desired clip pose ***********/
-  RCLCPP_INFO(LOGGER, "Waiting for mount arm goal pose via UDP...");
-  {
-    std::unique_lock<std::mutex> lock(mount_fix_goal_pose_mutex);
-    mount_fix_goal_pose_condition_variable.wait(lock, []() {
-      return !std::all_of(mount_fix_goal_pose.begin(), mount_fix_goal_pose.end(), [](double v) { return v == 0.0; });
-    });
-  }
+  bool plan_success = false;
+  mtc::Task mount_task;
+  while (!plan_success) {
+    RCLCPP_INFO(LOGGER, "Waiting for mount arm goal pose via UDP...");
+    {
+      std::unique_lock<std::mutex> lock(mount_fix_goal_pose_mutex);
+      mount_fix_goal_pose_condition_variable.wait(lock, []() {
+        return !std::all_of(mount_fix_goal_pose.begin(), mount_fix_goal_pose.end(), [](double v) { return v == 0.0; });
+      });
+    }
 
-  geometry_msgs::msg::PoseStamped mount_pose_in_mount_frame;
-  mount_pose_in_mount_frame.header.frame_id = "right_panda_link0";  // Recieved goal is in right arm base frame
-  mount_pose_in_mount_frame.pose.position.x = mount_fix_goal_pose[0];
-  mount_pose_in_mount_frame.pose.position.y = mount_fix_goal_pose[1];
-  mount_pose_in_mount_frame.pose.position.z = mount_fix_goal_pose[2];
-  mount_pose_in_mount_frame.pose.orientation.w = mount_fix_goal_pose[3];
-  mount_pose_in_mount_frame.pose.orientation.x = mount_fix_goal_pose[4];
-  mount_pose_in_mount_frame.pose.orientation.y = mount_fix_goal_pose[5];
-  mount_pose_in_mount_frame.pose.orientation.z = mount_fix_goal_pose[6];
+    geometry_msgs::msg::PoseStamped mount_pose_in_mount_frame;
+    mount_pose_in_mount_frame.header.frame_id = "right_panda_link0";  // Recieved goal is in right arm base frame
+    mount_pose_in_mount_frame.pose.position.x = mount_fix_goal_pose[0];
+    mount_pose_in_mount_frame.pose.position.y = mount_fix_goal_pose[1];
+    mount_pose_in_mount_frame.pose.position.z = mount_fix_goal_pose[2];
+    mount_pose_in_mount_frame.pose.orientation.w = mount_fix_goal_pose[3];
+    mount_pose_in_mount_frame.pose.orientation.x = mount_fix_goal_pose[4];
+    mount_pose_in_mount_frame.pose.orientation.y = mount_fix_goal_pose[5];
+    mount_pose_in_mount_frame.pose.orientation.z = mount_fix_goal_pose[6];
 
-  geometry_msgs::msg::PoseStamped mount_pose_in_world_frame = getPoseTransform(mount_pose_in_mount_frame, "world");
+    geometry_msgs::msg::PoseStamped mount_pose_in_world_frame = getPoseTransform(mount_pose_in_mount_frame, "world");
   
   // auto mount_task = createGoalPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, mount_pose_in_world_frame);
-  auto mount_task = createSampleGarspPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, "object3", mount_pose_in_world_frame, false);
-  try
-  {
-    mount_task.init();
-  }
-  catch (mtc::InitStageException& e)
-  {
-    RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task initialization failed: " << e);
-    return;
-  }
+  // auto mount_task = createSampleGraspPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, "object3", mount_pose_in_world_frame, false);
+  // try
+  // {
+  //   mount_task.init();
+  // }
+  // catch (mtc::InitStageException& e)
+  // {
+  //   RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task initialization failed: " << e);
+  //   return;
+  // }
 
-  if (!mount_task.plan(5))
-  {
-    RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task planning failed");
-    return;
+  // if (!mount_task.plan(5))
+  // {
+  //   RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task planning failed");
+  //   return;
+  // }
+
+  // mount_task.introspection().publishSolution(*mount_task.solutions().front());
+
+  // visual_tools_.prompt("[Publishing] Press 'next' to execute trajectory");
+
+ 
+    mount_task = createSampleGraspPoseTask(mount_group_name, mount_hand_group_name, mount_hand_frame, "object3", mount_pose_in_world_frame, false);
+    try {
+      mount_task.init();
+    } catch (mtc::InitStageException& e) {
+      RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task initialization failed: " << e.what());
+      return;
+    }
+
+    if (!mount_task.plan(5)) {
+      RCLCPP_ERROR_STREAM(LOGGER, "Mount arm move to pose task planning failed");
+      return;
+    }
+
+    mount_task.introspection().publishSolution(*mount_task.solutions().front());
+
+    // Wait for human confirmation
+    // visual_tools_.prompt("[Human Confirmation] Press 'next' to confirm the plan, or 'replan' to re-run the planning");
+
+    // Display prompt in RViz to inform the user
+    visual_tools_.prompt("[User Confirmation] Call the replan_service: send {data: true} to replan or {data: false} to continue.");
+
+    // // Wait for the service call to trigger input
+    // {
+    //   std::unique_lock<std::mutex> lock(mutex_);
+    //   // Wait until the service callback sets service_called_ to true.
+    //   cv_.wait(lock, []() { return service_called_; });
+    //   // Reset flag for next iteration (if needed)
+    //   // service_called_ = false;
+    // }
+
+    // // Check the flag set by the service callback.
+    // if (replan_flag_)
+    // {
+    //   RCLCPP_INFO(LOGGER, "Replan requested. Re-running planning...");
+
+    //   visual_tools_.prompt("[Replanning] Press 'next' to re-run the planning");
+    //   // Insert your replanning logic here.
+    //   // For example, reinitialize your planning task, replan, etc.
+    //   continue;  // Continue the loop to prompt again after replanning.
+    // }
+    // else
+    // {
+    //   RCLCPP_INFO(LOGGER, "User chose to continue. Exiting planning loop.");
+    //   plan_success = true;  // Exit loop and continue execution.
+    // }
   }
-
-  mount_task.introspection().publishSolution(*mount_task.solutions().front());
-
-  visual_tools_.prompt("[Publishing] Press 'next' to execute trajectory");
 
   auto mount_result = mount_task.execute(*mount_task.solutions().front());
   if (mount_result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
@@ -1639,22 +1726,22 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
     grasp_right->properties().set("eef", task.properties().get<std::string>("right_eef"));// Provide standard names for substages
     grasp_right->properties().set("group", task.properties().get<std::string>("right_group"));
     grasp_right->properties().set("ik_frame", task.properties().get<std::string>("right_ik_frame"));
-  //create a stage to approach the object
-  // {
-  //   auto stage =
-  //       std::make_unique<mtc::stages::MoveRelative>("approach object right", cartesian_planner);
-  //   stage->properties().set("marker_ns", "approach_object_right");
-  //   stage->properties().set("link", right_hand_frame);
-  //   stage->properties().configureInitFrom(mtc::Stage::PARENT, { "group" });
-  //   stage->setMinMaxDistance(0.01, 0.015);
+  // create a stage to approach the object
+  {
+    auto stage =
+        std::make_unique<mtc::stages::MoveRelative>("approach object right", cartesian_planner);
+    stage->properties().set("marker_ns", "approach_object_right");
+    stage->properties().set("link", right_hand_frame);
+    stage->properties().configureInitFrom(mtc::Stage::PARENT, { "group" });
+    stage->setMinMaxDistance(0.03, 0.10);
 
-  //   // Set hand forward direction
-  //   geometry_msgs::msg::Vector3Stamped vec_right;
-  //   vec_right.header.frame_id = right_hand_frame;
-  //   vec_right.vector.z = 1.0;
-  //   stage->setDirection(vec_right);
-  //   grasp_right->insert(std::move(stage));
-  // }
+    // Set hand forward direction
+    geometry_msgs::msg::Vector3Stamped vec_right;
+    vec_right.header.frame_id = right_hand_frame;
+    vec_right.vector.z = 0.05;
+    stage->setDirection(vec_right);
+    grasp_right->insert(std::move(stage));
+  }
   // {
   //   // Sample grasp pose
   //   auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose right");
@@ -1749,7 +1836,7 @@ mtc::Task MTCTaskNode::createRightArmTask(tf2::Quaternion q2)
   return task;
 }
 
-mtc::Task MTCTaskNode::createSampleGarspPoseTask(std::string arm_group_name, 
+mtc::Task MTCTaskNode::createSampleGraspPoseTask(std::string arm_group_name, 
                                                 std::string hand_group_name, 
                                                 std::string hand_frame,
                                                 std::string object_id,
