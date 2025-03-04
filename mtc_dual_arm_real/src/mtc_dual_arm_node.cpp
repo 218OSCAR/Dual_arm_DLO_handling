@@ -988,8 +988,10 @@ void MTCTaskNode::doMountingTask()
       // Reset flag for next iteration.
       service_called_ = false;
 
-      // Insert your replanning logic here.
-      // For example, reinitialize your planning task, replan, etc.
+      // Reset the mount_fix_goal_pose to zeros so that the wait condition is not immediately satisfied.
+      std::fill(mount_fix_goal_pose.begin(), mount_fix_goal_pose.end(), 0.0);
+      // Optionally notify the condition variable if needed:
+      mount_fix_goal_pose_condition_variable.notify_all();
       continue;  // Continue the loop to prompt again after replanning.
     }
     else
