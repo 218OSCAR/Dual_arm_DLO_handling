@@ -32,7 +32,7 @@ class RopeReceiver(Node):
     def receive_and_store(self):
         try:
             # Receive shape metadata first
-            shape_size = np.dtype(np.int32).itemsize * 2  # Two integers for shape (N, 3)
+            # shape_size = np.dtype(np.int32).itemsize * 2  # Two integers for shape (N, 3)
             shape_data, addr = self.sock.recvfrom(1024)
             shape_info = np.frombuffer(shape_data, dtype=np.int32)
 
@@ -84,10 +84,10 @@ class RopeMarkerPublisher(Node):
         # Continuous publishing loop
         if self.name == 'tcp_points':
             self.marker_array_pub = self.create_publisher(MarkerArray, self.topic, 10)
-            self.create_timer(0.1, self.publish_point_loop)
+            self.create_timer(0.5, self.publish_point_loop)
         else:
             self.marker_pub = self.create_publisher(Marker, self.topic, 10)
-            self.create_timer(0.1, self.publish_line_loop)
+            self.create_timer(0.5, self.publish_line_loop)
         
     def transform_point(self, point, source_frame, target_frame):
         """ Transform a point using TF2, waiting up to 100ms for a valid TF """
@@ -141,7 +141,50 @@ class RopeMarkerPublisher(Node):
             # Publish continuously
             self.marker_pub.publish(marker)
             self.get_logger().info(f"Published {len(rope_positions)} rope points to {self.topic}")
+    
+    def publish_line_loop_as_marker(self):
+        """ Continuously publishes the latest stored rope points as sphere markers """
+        # Retrieve the current rope positions safely
+        with self.data_lock:
+            rope_positions = self.shared_data.get("rope_positions", np.empty((0, 3), dtype=np.float64))
+
+        # If there are no points, exit the function
+        with self.data_lock:
+            if rope_positions.shape[0] == 0:
+                return  # No data to publish yet
+
+            # Create a Marker message with SPHERE_LIST type
+            marker = Marker()
+            marker.header.frame_id = "world"
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.ns = self.name + "_model"
+            marker.id = 0
+            marker.type = Marker.SPHERE_LIST  # Use SPHERE_LIST instead of LINE_STRIP
+            marker.action = Marker.ADD
             
+            # Set the scale for spheres (all dimensions should be set)
+            sphere_diameter = 0.015  # Adjust this value to change the sphere size
+            marker.scale.x = sphere_diameter
+            marker.scale.y = sphere_diameter
+            marker.scale.z = sphere_diameter
+            
+            # Set marker color
+            marker.color.r = self.marker_color[0]
+            marker.color.g = self.marker_color[1]
+            marker.color.b = self.marker_color[2]
+            marker.color.a = 1.0
+            
+            # Add each point as a sphere marker
+            for i, point in enumerate(rope_positions):
+                if i % 2 == 0:
+                    p = Point(x=point[0], y=point[1], z=point[2])
+                    transformed_point = self.transform_point(p, "right_panda_link0", "world")
+                    marker.points.append(transformed_point)
+            
+            # Publish the sphere markers
+            self.marker_pub.publish(marker)
+            self.get_logger().info(f"Published {len(rope_positions)} rope points as sphere markers to {self.topic}")
+
     def publish_point_loop(self):
         """ Continuously publishes the latest stored rope points """
         with self.data_lock:
@@ -188,7 +231,7 @@ def main(args=None):
     rclpy.init(args=args)
     
     raw_port = 5090
-    corrected_port = 5091
+    corrected_port = 5093
     intersection_port = 5092
     
     # Shared memory for rope positions
